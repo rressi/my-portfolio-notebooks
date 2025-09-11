@@ -1,0 +1,16 @@
+[project]
+name = "portfolio"
+version = "0.1.0"
+description = "Finance study over portfolio"
+authors = [
+    { name = "Riccardo Ressi", email = "Riccardo.Ressi@gmail.com" }
+]
+
+requires-python = ">=3.12"
+dependencies = [
+    "colorama",
+    "jupyterlab",
+    "matplotlib",
+    "pandas",
+    "yfinance"
+]
