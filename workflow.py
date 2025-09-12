@@ -13,6 +13,7 @@ class WorkflowContext(t.NamedTuple):
     buy_column: str | None = None
     buy_date: str | pd.Timestamp | None = None
     buy_price: float | None = None
+    company_name: str | None = None
     data: pd.DataFrame | None = None
     entry_column: str | None = None
     entry_prices: t.Sequence[float] | None = None
@@ -20,7 +21,7 @@ class WorkflowContext(t.NamedTuple):
     last_price: float | None = None
     last_sma: float | None = None
     sma_column: str | None = None
-    sma_lenght: int = 15
+    sma_lenght: int = 20
     start_date: str | pd.Timestamp = "2025-06-01"
     target_column: str | None = None
     target_prices: t.Sequence[float] | None = None
@@ -28,6 +29,7 @@ class WorkflowContext(t.NamedTuple):
 
     def load(self) -> t.Self:
         ticker: yf.Ticker = yf.Ticker(self.security)
+        company_name: str = get_company_name(ticker)
 
         start_date: pd.Timestamp = (
             pd.Timestamp(self.start_date)
@@ -48,6 +50,7 @@ class WorkflowContext(t.NamedTuple):
         assert isinstance(last_price, float | None)
 
         return self._replace(
+            company_name=company_name,
             data=data,
             last_date=last_date,
             last_price=last_price,
@@ -278,7 +281,8 @@ class WorkflowContext(t.NamedTuple):
                 )
 
         plt.title(
-            f"{self.security} - Close price with SMA({self.sma_lenght})"
+            f"{self.security} ({self.company_name}) - "
+            f"Close price with SMA({self.sma_lenght})"
         )
         plt.xlabel("Date")
         plt.ylabel("Price (USD)")
@@ -319,7 +323,7 @@ class WorkflowContext(t.NamedTuple):
             info["grossProfits"] = "{:,d}".format(gross_profits)
 
         data = {
-            "Company Name": [info.get("longName")],
+            "Company Name": [self.company_name],
             "Industry": [info.get("industry")],
             "Revenue (ttm)": [info.get("totalRevenue")],
             "Gross Profit (ttm)": [info.get("grossProfits")],
@@ -386,6 +390,27 @@ def first_value(
         (float(x) for x in seq if x is not None), 
         None  # Default value if all are None
     )
+
+
+def get_company_name(
+        ticker: yf.Ticker,
+) -> str | None:
+    company_name: str = ticker.info.get("shortName")
+    if company_name is None:
+        return None
+    if "," in company_name:
+        company_name = company_name.split(",")[0].strip()
+    if "-" in company_name:
+        company_name = company_name.split(" - ")[0].strip()
+    company_name = (
+        company_name.replace(" Inc.", "")
+        .replace(" Corporati", "")
+        .replace(" Corporation", "")
+        .replace(" Corp.", "")
+        .replace(" Incorporated", "")
+        .replace(" plc", "")
+    )
+    return company_name
 
 
 def derive_prices(
