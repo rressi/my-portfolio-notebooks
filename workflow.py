@@ -1,4 +1,6 @@
 from colorama import Fore, Style
+import enum
+import io
 from IPython.display import display
 import matplotlib.pyplot as plt
 import math
@@ -7,131 +9,261 @@ import typing as t
 import yfinance as yf
 
 
+class Col(enum.StrEnum):
+    AMOUNT="amount"
+    DATE="date"
+    ENTER = "enter"
+    EXIT = "exit"
+    PRICE = "price"  # Market price
+    PURCHASE = "purchase"  # Avg. purchase price
+    QUANTITY = "quantity"
+    SMA = "sma"
+
+
 class WorkflowContext(t.NamedTuple):
     security: str
-
-    buy_column: str | None = None
-    buy_date: str | pd.Timestamp | None = None
-    buy_price: float | None = None
-    company_name: str | None = None
-    data: pd.DataFrame | None = None
-    entry_column: str | None = None
-    entry_prices: t.Sequence[float] | None = None
-    last_date: pd.Timestamp | None = None
-    last_price: float | None = None
-    last_sma: float | None = None
-    sma_column: str | None = None
+    ops: str = ""
+    
+    company_name: str = ""
+    data: pd.DataFrame = pd.DataFrame()
+    invest_ratio: float = 1.05
+    last_enter_prices: t.Sequence[float] = tuple()
+    last_exit_prices: t.Sequence[float] = tuple()
+    operations: pd.DataFrame = pd.DataFrame()
     sma_lenght: int = 20
     start_date: str | pd.Timestamp = "2025-06-01"
-    target_column: str | None = None
-    target_prices: t.Sequence[float] | None = None
-    time_zone: str = "America/New_York"
+    ticker: yf.Ticker | None = None
 
     def load(self) -> t.Self:
         ticker: yf.Ticker = yf.Ticker(self.security)
         company_name: str = get_company_name(ticker)
+        tz_name = ticker.info.get("exchangeTimezoneName")
 
         start_date: pd.Timestamp = (
             pd.Timestamp(self.start_date)
-            .tz_localize(self.time_zone)
+            .tz_localize(tz_name)
+        )
+        start_date_before: pd.Timestamp = (
+            start_date - pd.Timedelta(days=self.sma_lenght + 1)
         )
         data: pd.DataFrame = (
             ticker.history(
-                start=self.start_date, 
+                start=start_date_before, 
                 interval="1d",
             )
+            [["Close"]]
+            .rename(columns={"Close": Col.PRICE.value})
+            .sort_index()
         )
-
-        last_date: pd.Timestamp = data.index[-1]
-        last_price: float | None = first_value(
-            ticker.fast_info["last_price"],
-            data["Close"].iloc[-1],
-        )
-        assert isinstance(last_price, float | None)
-
+        if data.empty:
+            raise ValueError(f"No data found for {self.security}")
+        
         return self._replace(
             company_name=company_name,
             data=data,
-            last_date=last_date,
-            last_price=last_price,
             start_date=start_date,
+            ticker=ticker,
         )
+    
+    def append_last_price(self) -> t.Self:
+        if self.data.empty:
+            return self
 
-    def compute(self) -> t.Self:
-        data: pd.DataFrame = self.data
-        assert isinstance(data, pd.DataFrame)
+        last_price: float | None = (
+            self.ticker.fast_info.get("last_price", None)
+        )
+        if last_price is None:
+            return self
 
-        sma_column: str =f"SMA-{self.sma_lenght}"
-        data[sma_column] = data["Close"].rolling(
+        tz=data.index.tz
+        current_date: pd.Timestamp = (
+            pd.Timestamp.now(tz=tz)
+            .normalize()
+        )
+        data = pd.concat([
+            data,
+            pd.DataFrame(
+                data={"Price": last_price},
+                index=[current_date],
+            ),
+        ])
+        data = data[~data.index.duplicated(keep='last')]
+
+        return self._replace(
+            data=data,
+        )
+    
+    def compute_sma(self) -> t.Self:
+        if self.data.empty:
+            return self
+
+        data: pd.DataFrame = self.data.copy()
+        price_col: str = Col.PRICE.value
+        sma_col: str = Col.SMA.value
+        data[sma_col] = data[price_col].rolling(
             window=self.sma_lenght,
         ).mean()
 
-        last_sma: float = first_value(
-            data[sma_column].iloc[-1],
-        )
-        assert isinstance(last_sma, float | None)
-
-        buy_column: str = "Buy Price"
-        buy_date: pd.Timestamp | None = None
-        if self.buy_price is not None:
-            data[buy_column] = self.buy_price
-            buy_date: pd.Timestamp = (
-                pd.Timestamp(self.buy_date)
-                .tz_localize(self.time_zone)
-            )
-            if buy_date not in data.index:
-                idx = data.index.get_indexer([buy_date], method="pad")[0]
-                if idx >= 0:
-                    buy_date = data.index[idx]
-
-        entry_column: str = "Buy"        
-        entry_prices: t.Sequence[float] | None = (
-            self.entry_prices if self.entry_prices is not None 
-            else derive_prices(
-                reference_price=first_value(
-                    last_sma,
-                    self.last_price,
-                ),
-                index_first=-1,
-                index_last=-4,
-                ratio=1.05,
-            )
-        )
-        if entry_prices:
-            for i, entry_price in enumerate(entry_prices):
-                data[f"{entry_column} #{i + 1}"] = entry_price
-
-        target_column: str = "Sell"        
-        target_prices: t.Sequence[float] | None = (
-            self.target_prices if self.target_prices is not None 
-            else derive_prices(
-                reference_price=first_value(
-                    self.buy_price,
-                    last_sma,
-                    self.last_price,
-                ),
-                index_first=1,
-                index_last=4,
-                ratio=1.05,
-            )
-        )
-        if target_prices:
-            for i, target_price in enumerate(target_prices):
-                data[f"{target_column} #{i + 1}"] = target_price
+        # Remove items before the date of the first valid SMA
+        first_valid_sma_idx = data[sma_col].first_valid_index()
+        if first_valid_sma_idx is not None:
+            data = data.loc[first_valid_sma_idx:]
 
         return self._replace(
-            buy_date=buy_date,
-            buy_column=buy_column,
             data=data,
-            entry_prices=entry_prices,
-            entry_column=entry_column,
-            last_sma=last_sma,
-            sma_column=sma_column,
-            target_column=target_column,
-            target_prices=target_prices,
+        )
+    
+    def parse_purchases(self) -> t.Self:
+        if self.data.empty:
+            return self
+
+        # Clean operations input:
+        ops_csv: str = "\n".join(
+            line.strip()
+            for line in self.ops.splitlines()
+            if line.strip()
+        )
+        if not ops_csv:
+            return self        
+
+        # Read investment operations:
+        operations: pd.DataFrame = pd.read_csv(
+            t.cast(t.IO[str], io.StringIO(ops_csv)),
+            comment="#",
+            header=0,
+        )
+        if operations.empty:
+            return self
+        
+        # Clean column names:
+        operations.columns = (
+            operations.columns
+            .str.strip()        # rimuove spazi all'inizio e alla fine
+            .str.lower()        # converte in minuscolo
         )
 
-    def print_prices(self) -> t.Self:
+        # Ensure monotonic order for inference across DST folds
+        operations[Col.DATE.value] = pd.to_datetime(operations[Col.DATE.value])
+        operations = operations.sort_values(Col.DATE.value)
+
+        # Localize; 'infer' needs monotonic order
+        operations[Col.DATE.value] = operations[Col.DATE.value].dt.tz_localize(
+            self.data.index.tz,
+        )
+        
+        # Set as index
+        operations = operations.set_index(Col.DATE.value).sort_index()
+        
+        # Add a column with the transaction amount:
+        quantity: pd.Series = operations[Col.QUANTITY.value]
+        price: pd.Series = operations[Col.PRICE.value]
+        operations[Col.AMOUNT.value] = price * quantity
+
+        data: pd.DataFrame = self.data.copy()
+        first_date: pd.Timestamp = data.index[0]
+        last_date: pd.Timestamp = data.index[-1]
+
+        # Compute average price:
+        avg_price = 0.0
+        tot_cost = 0.0
+        tot_quantity = 0.0
+        for date, row in operations.iterrows():
+            quantity: int = row['quantity']
+            tot_quantity += quantity
+            if tot_quantity > 0:
+                price: float = row['price']
+                tot_cost += quantity * price
+                avg_price = tot_cost / tot_quantity
+            else:
+                avg_price = 0.0
+                tot_cost = 0.0
+                tot_quantity = 0.0
+            if first_date <= date <= last_date:
+                data.loc[date, Col.PURCHASE.value] = avg_price
+                data.loc[date, Col.QUANTITY.value] = tot_quantity
+
+        # The columns 'purchase' and 'quantity' are forward filled,
+        # but only where 'quantity' is > 0
+        data[Col.PURCHASE.value] = data[Col.PURCHASE.value].ffill()
+        data[Col.QUANTITY.value] = data[Col.QUANTITY.value].ffill()
+        mask: pd.Series = data[Col.QUANTITY.value] > 0
+        data.loc[mask != True, [Col.QUANTITY.value, Col.PURCHASE.value]] = pd.NA
+
+        return self._replace(
+            operations=operations,
+            data=data
+        )
+
+    def compute_enter_prices(self) -> t.Self:
+        if self.data.empty:
+            return self
+        data: pd.DataFrame = self.data.copy()
+        price: pd.Series = data[Col.PRICE.value]
+        sma: pd.Series = data[Col.SMA.value]
+
+        # The reference price is the SMA when available,
+        # Otherwise the market price:
+        price = sma.combine_first(price)
+
+        last_enter_prices: t.Sequence[float] = []
+        x: int
+        for x in range(1, 4):
+            enter_col: str = f"{Col.ENTER.value} #{x}"
+            k: float = self.invest_ratio ** (-x)
+            data[enter_col] = k * price
+            last_enter_prices.append(data[enter_col].iloc[-1])
+
+        return self._replace(
+            data=data,
+            last_enter_prices=last_enter_prices,
+        )
+    
+    def compute_exit_prices(self) -> t.Self:
+        if self.data.empty:
+            return self
+        data: pd.DataFrame = self.data.copy()
+        price: pd.Series = data[Col.PRICE.value]
+        sma: pd.Series = data[Col.SMA.value]
+
+        # The reference price is the SMA when available,
+        # Otherwise the market price:
+        price = sma.combine_first(price)
+
+        # The reference price is the avg. purchase price when
+        # available, otherwise the market price:
+        if Col.PURCHASE.value in data.columns:
+            purchase: pd.Series = data[Col.PURCHASE.value]
+            price = purchase.combine_first(price)
+
+        last_exit_prices: t.Sequence[float] = []
+        x: int
+        for x in range(1, 4):
+            exit_col: str = f"{Col.EXIT.value} #{x}"
+            k: float = self.invest_ratio ** x
+            data[exit_col] = k * price
+            last_exit_prices.append(data[exit_col].iloc[-1])
+
+        return self._replace(
+            data=data,
+            last_exit_prices=last_exit_prices,
+        )
+
+    def print_last_prices(self) -> t.Self:
+        last_price: float = 0.0
+        price_col: str
+        for price_col in (
+            Col.PURCHASE.value, 
+            Col.SMA.value, 
+            Col.PRICE.value
+        ):
+            if (
+                price_col in self.data.columns
+                and not self.data[price_col].isna().all()
+            ):
+                last_price = self.data[price_col].iloc[-1]
+                break
+        if last_price == 0.0:
+            return self
 
         def _represent_price(
             pos: int,
@@ -147,27 +279,16 @@ class WorkflowContext(t.NamedTuple):
                 if pos > 0:
                     return f"{Fore.YELLOW}{price:,.2f}{Style.RESET_ALL}"
             return str(price)
-
+        
         prices: t.Sequence[str] = [
             *(
-                _represent_price(-1, entry_price) 
-                for entry_price in sorted(
-                    self.entry_prices or []
-                )
+                _represent_price(-1, price) 
+                for price in sorted(self.last_enter_prices)
             ),
-            _represent_price(
-                pos=0,
-                price=first_value(
-                    self.buy_price,
-                    self.last_sma,
-                    self.last_price,
-                ),
-            ),
+            _represent_price(0, last_price),
             *(
-                _represent_price(1, target_price) 
-                for target_price in sorted(
-                    self.target_prices or []
-                )
+                _represent_price(1, price) 
+                for price in sorted(self.last_exit_prices)
             ),
         ]
         print("Prices:", " | ".join(prices))
@@ -175,117 +296,152 @@ class WorkflowContext(t.NamedTuple):
         return self
 
     def print_scores(self) -> t.Self:
+        if self.data.empty:
+            return self
 
         data: pd.DataFrame = self.data
-        assert isinstance(data, pd.DataFrame)
+        last_price: float = data[Col.PRICE.value].iloc[-1]
 
-        last_sma: float = self.last_sma
-        last_price: float = self.last_price
+        # With an invest ration of 1.05, the target is 5%:
+        target: float = 100 * (self.invest_ratio - 1.0 )
 
-        buy_score: float = 100 * (
-            (last_sma - last_price)
-            / last_price
-        )
-        buy_color: str = Fore.GREEN if buy_score >= 5 else Fore.LIGHTWHITE_EX
-        print(f"{buy_color}Buy score: {buy_score:.2f}%")
+        # Compute buy score:
+        if Col.SMA.value in data.columns:
+            last_sma: float = data[Col.SMA.value].iloc[-1]
+            score: float = 100 * ((last_sma - last_price) / last_price)
+            color: str = Fore.GREEN if score >= target else Fore.LIGHTWHITE_EX
+            print(f"{color}Buy score: {score:.2f}%")
 
-        if self.buy_price is not None:
-            buy_price: float = self.buy_price        
-            sell_score: float = 100 * (last_price - buy_price) / buy_price
-            sell_color = Fore.YELLOW if sell_score >= 5 else Fore.LIGHTWHITE_EX
-            print(f"{sell_color}Sell score: {sell_score:.2f}%")
+        # Compute sell score:
+        if Col.PURCHASE.value in data.columns:
+            last_purchase: float = self.data[Col.PURCHASE.value].iloc[-1]
+            if not pd.isna(last_purchase):
+                score: float = 100 * (last_price - last_purchase) / last_purchase
+                color = Fore.YELLOW if score >= target else Fore.LIGHTWHITE_EX
+                print(f"{color}Sell score: {score:.2f}%")
 
         return self
 
     def plot(self) -> t.Self:
+        if self.data.empty:
+            return self
+        
         data: pd.DataFrame = self.data
-        assert isinstance(data, pd.DataFrame)
+        first_date: pd.Timestamp = data.index[0]
+        last_date: pd.Timestamp = data.index[-1]
 
         plt.figure(figsize=(12,6))
 
         # Market prices:
-        if self.last_price is not None:
-            close_price: float = data["Close"].iloc[-1]
-            plt.plot(
-                data.index, 
-                data["Close"], 
-                label=f"Close price: {close_price:.2f}",
-                linewidth=1, color="blue",
-            )
-            plt.scatter(
-                [self.last_date],
-                [self.last_price],
-                s=80, zorder=3, color="blue",
-            )
-            plt.annotate(
-                f"{self.last_price:.2f}", 
-                (self.last_date, self.last_price), 
-                xytext=(10,-15), textcoords="offset points", color="blue",
-            )
+        price: pd.Series = data[Col.PRICE.value]
+        last_price: float = price.iloc[-1]
+        plt.plot(
+            data.index, price, 
+            label=f"Market price: {last_price:.2f}",
+            linewidth=2, color="green",
+        )
+        plt.scatter(
+            [last_date], [last_price],
+            s=80, zorder=3, color="green",
+            alpha=0.75, marker=">"
+        )
+        plt.annotate(
+            f"{last_price:.2f}", 
+            (last_date, last_price), 
+            xytext=(10,-5),
+            textcoords="offset points", 
+            color="green",
+        )
 
         # SMA-X:
-        if self.last_sma is not None:
+        if Col.SMA.value in data.columns:
+            sma: pd.Series = data[Col.SMA.value]
+            last_sma: float = sma.iloc[-1]
             plt.plot(
-                data.index, 
-                data[self.sma_column], 
-                label=f"{self.sma_column}: {self.last_sma:.2f}",
+                data.index, sma, 
+                label=f"SMA-{self.sma_lenght}: {last_sma:.2f}",
                 linewidth=2, color="orange",
             )
             plt.scatter(
-                [self.last_date],
-                [self.last_sma],
+                [last_date], [last_sma],
                 s=80, zorder=3, color="orange",
+                alpha=0.75, marker=">"
             )
             plt.annotate(
-                f"{self.last_sma:.2f}", 
-                (self.last_date, self.last_sma), 
-                xytext=(10,-15), textcoords="offset points", color="orange",
+                f"{last_sma:.2f}", 
+                (last_date, last_sma), 
+                xytext=(10,-5), 
+                textcoords="offset points", 
+                color="orange",
             )
 
-        # Buy price:
-        if self.buy_price is not None:
+        # Plot investment activities:
+        purchase_col: str = Col.PURCHASE.value
+        if purchase_col in data.columns:
+            last_valid_purchase: float = float(
+                data[Col.PURCHASE.value].dropna().iloc[-1]
+            )
             plt.plot(
-                data.index, 
-                data[self.buy_column], 
-                label=f"{self.buy_column}: {self.buy_price:.2f}", 
-                linewidth=2,
-                linestyle="--", color="red",
+                data.index, data[purchase_col], 
+                label=f"Avg. purch. price: {last_valid_purchase:.2f}",
+                linewidth=2, color="blue",
             )
-            plt.scatter(
-                [self.buy_date],
-                [self.buy_price],
-                s=80, zorder=3, color="red",
+            last_purchase: float = float(
+                data[Col.PURCHASE.value].iloc[-1]
             )
-            plt.annotate(
-                f"{self.buy_price:.2f}", 
-                (self.buy_date, self.buy_price), 
-                xytext=(10,10), textcoords="offset points", color="red",
-            )
+            if not pd.isna(last_purchase):
+                plt.scatter(
+                    [last_date], [last_purchase],
+                    s=80, zorder=3, color="blue",
+                    alpha=0.75, marker=">"
+                )
+                plt.annotate(
+                    f"{last_purchase:.2f}", 
+                    (last_date, last_purchase), 
+                    xytext=(10,-5), 
+                    textcoords="offset points", 
+                    color="blue",
+                )
+        if not self.operations.empty:
+            for date, price, quantity in zip(
+                self.operations.index, 
+                self.operations[Col.PRICE.value],
+                self.operations[Col.QUANTITY.value],
+            ):
+                if first_date <= date <= last_date: 
+                    plt.scatter(
+                        [date], [price],
+                        s=80, zorder=3, 
+                        color="lightgreen" if quantity > 0 else "red",
+                        marker="o",
+                        alpha=0.5,
+                    )
 
-        # Entry prices:
-        if self.entry_prices:
-            for i, price in enumerate(self.entry_prices):
+        # Enter/exit prices:
+        if self.last_enter_prices:
+            for i, price in enumerate(self.last_enter_prices):
                 self.plot_price_level(
-                    color="forestgreen",
-                    column=f"{self.entry_column} #{i + 1}",
+                    color="gray",
+                    column=f"{Col.ENTER.value} #{i + 1}",
+                    price=price,
+                )
+        if self.last_exit_prices:
+            for i, price in enumerate(self.last_exit_prices):
+                self.plot_price_level(
+                    color="gray",
+                    column=f"{Col.EXIT.value} #{i + 1}",
                     price=price,
                 )
 
-        # Target prices:
-        if self.target_prices:
-            for i, price in enumerate(self.target_prices):
-                self.plot_price_level(
-                    color="gold",
-                    column=f"{self.target_column} #{i + 1}",
-                    price=price,
-                )
+        ticker: yf.Ticker = self.ticker or yf.Ticker(self.security)
+        currency: str = ticker.info.get("currency") or "USD"
 
         plt.title(
             f"{self.security} ({self.company_name}) - "
-            f"Close price with SMA({self.sma_lenght})"
+            f"Market price with SMA({self.sma_lenght})"
         )
         plt.xlabel("Date")
-        plt.ylabel("Price (USD)")
+        plt.ylabel(f"Price ({currency})")
         plt.legend(
             loc="center left", 
             bbox_to_anchor=(1e-2, 0.5),
@@ -301,17 +457,18 @@ class WorkflowContext(t.NamedTuple):
         price: float,
         color: str,
     ):
-        plt.plot(
-            self.data.index,
-            self.data[column],
-            label=f"{column}: {price:.2f}",
-            linewidth=1,
-            color=color,
-            linestyle="--",
-        )
+        if column in self.data.columns:
+            plt.plot(
+                self.data.index,
+                self.data[column],
+                label=f"{column}: {price:.2f}",
+                linewidth=1,
+                color=color,
+                linestyle="--",
+            )
 
     def show_company_table(self) -> t.Self:
-        ticker = yf.Ticker(self.security)
+        ticker:yf.Ticker = self.ticker or yf.Ticker(self.security)
         info = dict(ticker.info)
 
         revenue: int | None = info.get("totalRevenue", None)
@@ -324,15 +481,15 @@ class WorkflowContext(t.NamedTuple):
 
         data = {
             "Company Name": [self.company_name],
+            "Current Price": [info.get("currentPrice")],
+            "Forward EPS": [info.get("forwardEps")],
+            "Gross Profit (ttm)": [info.get("grossProfits")],
             "Industry": [info.get("industry")],
             "Revenue (ttm)": [info.get("totalRevenue")],
-            "Gross Profit (ttm)": [info.get("grossProfits")],
-            "Current Price": [info.get("currentPrice")],
-            "Target Mean Price": [info.get("targetMeanPrice")],
             "Target High Price": [info.get("targetHighPrice")],
             "Target Low Price": [info.get("targetLowPrice")],
+            "Target Mean Price": [info.get("targetMeanPrice")],
             "Trailing EPS": [info.get("trailingEps")],
-            "Forward EPS": [info.get("forwardEps")],
             "Website": [info.get("website")],
         }
         df = pd.DataFrame(
@@ -343,7 +500,7 @@ class WorkflowContext(t.NamedTuple):
         return self
 
     def show_status(self) -> t.Self:
-        ticker: yf.Ticker = yf.Ticker(self.security)
+        ticker:yf.Ticker = self.ticker or yf.Ticker(self.security)
         fast_info: dict[str, t.Any] = dict(ticker.fast_info)
 
         def _get_field(key: str) -> str:
@@ -369,26 +526,27 @@ class WorkflowContext(t.NamedTuple):
         return self
 
 
-def run(**kwargs):
+def run(
+        security: str, 
+        ops: str="", 
+        **kwargs
+):
     (
-        WorkflowContext(**kwargs)
-        .load()
-        .compute()
-        .print_prices()
+        WorkflowContext(
+            security=security,
+            ops=ops,
+            **kwargs
+        ).load()
+        .append_last_price()
+        .compute_sma()
+        .parse_purchases()
+        .compute_enter_prices()
+        .compute_exit_prices()
+        .print_last_prices()
         .print_scores()
         .plot()
         .show_company_table()
         .show_status()
-    )
-
-
-def first_value(
-        *seq: float | None,
-) -> float | None:
-    """Return the first non-None value in a sequence, or None if all are None."""
-    return next(
-        (float(x) for x in seq if x is not None), 
-        None  # Default value if all are None
     )
 
 
@@ -411,22 +569,3 @@ def get_company_name(
         .replace(" plc", "")
     )
     return company_name
-
-
-def derive_prices(
-        reference_price: float | None,
-        index_first: int = 1,
-        index_last: int = 4,
-        ratio: float = 1.05,
-) -> t.Sequence[float] | None:
-    if reference_price is None:
-        return None
-    range_step: int = 1 if index_first < index_last else -1 
-    return [
-        reference_price * math.pow(ratio, x)
-        for x in range(
-            index_first, 
-            index_last, 
-            range_step,
-        )
-    ]

@@ -92,9 +92,17 @@ def find_buy_opportunities():
         candidates["% from MA20"]
     ):
         print(f"{ticker} - {company} - buy score: {-pct_from_ma20}%")
-        workflow.WorkflowContext(
-            security = ticker,
-        ).load().compute().plot()
+        (
+            workflow.WorkflowContext(security=ticker)
+            .load()
+            .append_last_price()
+            .compute_sma()
+            .compute_enter_prices()
+            .compute_exit_prices()
+            .print_last_prices()
+            .print_scores()
+            .plot()
+        )
 
 
 if __name__ == "__main__":
