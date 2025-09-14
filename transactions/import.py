@@ -39,11 +39,12 @@ def import_file(
     df = df.rename(columns={
         "Data": "date",
         "Quantità": "quantity",
-        "Prezzo unit.": "price"
+        "Prezzo unit.": "price",
+        "Valuta": "currency",
     })
 
     # 4) Keep only the requested columns in the given order
-    df = df[["date", "quantity", "price"]]
+    df = df[["date", "quantity", "price", "currency"]]
 
     # 3) Sort by date ascending (assuming day-first format, e.g. DD/MM/YYYY)
     df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")

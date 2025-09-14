@@ -3,10 +3,11 @@ import enum
 import io
 from IPython.display import display
 import matplotlib.pyplot as plt
-import math
 import pandas as pd
 import typing as t
 import yfinance as yf
+
+import currency
 
 
 class Col(enum.StrEnum):
@@ -142,17 +143,18 @@ class WorkflowContext(t.NamedTuple):
             .str.lower()        # converte in minuscolo
         )
 
-        # Ensure monotonic order for inference across DST folds
+        # Convert date to pd.Datetime and make it the index of the DataFrame:
         operations[Col.DATE.value] = pd.to_datetime(operations[Col.DATE.value])
         operations = operations.sort_values(Col.DATE.value)
-
-        # Localize; 'infer' needs monotonic order
-        operations[Col.DATE.value] = operations[Col.DATE.value].dt.tz_localize(
-            self.data.index.tz,
+        operations[Col.DATE.value] = (
+            operations[Col.DATE.value]
+            .dt.tz_localize(self.data.index.tz)
         )
-        
-        # Set as index
         operations = operations.set_index(Col.DATE.value).sort_index()
+
+        if "currency" in operations.columns:
+            cur: str = self.ticker.info["currency"]
+            operations = currency.convert(operations, cur)
         
         # Add a column with the transaction amount:
         quantity: pd.Series = operations[Col.QUANTITY.value]
@@ -168,10 +170,10 @@ class WorkflowContext(t.NamedTuple):
         tot_cost = 0.0
         tot_quantity = 0.0
         for date, row in operations.iterrows():
-            quantity: int = row['quantity']
+            quantity: int = row["quantity"]
             tot_quantity += quantity
             if tot_quantity > 0:
-                price: float = row['price']
+                price: float = row["price"]
                 tot_cost += quantity * price
                 avg_price = tot_cost / tot_quantity
             else:
