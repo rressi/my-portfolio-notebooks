@@ -15,11 +15,14 @@ tickers = [
     "ASML",
     "AVGO",
     "AVTR",
+    "BTC-USD",
     "COHR",
+    "COIN",
     "CRM",
     "CRWD",
     "CRWV",
     "CSCO",
+    "ETH-USD",
     "GOOGL",
     "IBM",
     "INTC",
@@ -41,7 +44,10 @@ tickers = [
     "TSLA",
     "TSM", 
     "TXN", 
-    "WDC", 
+    "WDC",
+    # "XAU-USD",
+    "XRP-USD",
+    "ZGLD.SW", 
 ]
 
 def find_buy_opportunities():
@@ -60,7 +66,7 @@ def find_buy_opportunities():
             )
         )
         if len(df) < 20:
-            print(f"{ticker_name}: not enought data points({len(df)})")
+            print(f"{ticker_name}: not enought data points ({len(df)})")
             continue  # troppo pochi dati
 
         ma20 = df['Close'].rolling(window=20).mean()
