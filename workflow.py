@@ -251,20 +251,18 @@ class WorkflowContext(t.NamedTuple):
         )
 
     def print_last_prices(self) -> t.Self:
-        last_price: float = 0.0
+        last_price: float = pd.NA
         price_col: str
         for price_col in (
             Col.PURCHASE.value, 
             Col.SMA.value, 
             Col.PRICE.value
         ):
-            if (
-                price_col in self.data.columns
-                and not self.data[price_col].isna().all()
-            ):
+            if  price_col in self.data.columns:
                 last_price = self.data[price_col].iloc[-1]
+            if not pd.isna(last_price):
                 break
-        if last_price == 0.0:
+        if pd.isna(last_price):
             return self
 
         def _represent_price(
@@ -277,7 +275,7 @@ class WorkflowContext(t.NamedTuple):
                 if pos < 0:
                     return f"{Fore.GREEN}{price:,.2f}{Style.RESET_ALL}"
                 if pos == 0:
-                    return f"{price:.4f}"
+                    return f"{price:.2f}"
                 if pos > 0:
                     return f"{Fore.YELLOW}{price:,.2f}{Style.RESET_ALL}"
             return str(price)
