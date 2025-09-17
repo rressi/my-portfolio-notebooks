@@ -18,7 +18,8 @@ class Col(enum.StrEnum):
     PRICE = "price"  # Market price
     PURCHASE = "purchase"  # Avg. purchase price
     QUANTITY = "quantity"
-    SMA = "sma"
+    SMA_FAST = "sma"
+    SMA_SLOW = "sma-slow"
 
 
 class WorkflowContext(t.NamedTuple):
@@ -31,7 +32,8 @@ class WorkflowContext(t.NamedTuple):
     last_enter_prices: t.Sequence[float] = tuple()
     last_exit_prices: t.Sequence[float] = tuple()
     operations: pd.DataFrame = pd.DataFrame()
-    sma_lenght: int = 10
+    sma_fast_lenght: int = 10
+    sma_slow_lenght: int = 20
     start_date: str | pd.Timestamp = "2025-06-01"
     ticker: yf.Ticker | None = None
 
@@ -44,8 +46,9 @@ class WorkflowContext(t.NamedTuple):
             pd.Timestamp(self.start_date)
             .tz_localize(tz_name)
         )
-        start_date_before: pd.Timestamp = (
-            start_date - pd.Timedelta(days=self.sma_lenght + 1)
+        start_date_before: pd.Timestamp = min(
+            start_date - pd.Timedelta(days=self.sma_fast_lenght + 1),
+            start_date - pd.Timedelta(days=self.sma_slow_lenght + 1)
         )
         data: pd.DataFrame = (
             ticker.history(
@@ -94,19 +97,27 @@ class WorkflowContext(t.NamedTuple):
             data=data,
         )
     
-    def compute_sma(self) -> t.Self:
+    def compute_SMAs(self) -> t.Self:
         if self.data.empty:
             return self
 
-        data: pd.DataFrame = self.data.copy()
-        price_col: str = Col.PRICE.value
-        sma_col: str = Col.SMA.value
-        data[sma_col] = data[price_col].rolling(
-            window=self.sma_lenght,
+        price: pd.Series = self.data[Col.PRICE.value]
+        sna_fast: pd.Series = price.rolling(
+            window=self.sma_fast_lenght,
+        ).mean()
+        sna_slow: pd.Series = price.rolling(
+            window=self.sma_slow_lenght,
         ).mean()
 
+        data: pd.DataFrame = self.data.copy()
+        data[Col.SMA_FAST.value] = sna_fast
+        data[Col.SMA_SLOW.value] = sna_slow
+
         # Remove items before the date of the first valid SMA
-        first_valid_sma_idx = data[sma_col].first_valid_index()
+        first_valid_sma_idx = max(
+            sna_fast.first_valid_index() or -1,
+            sna_slow.first_valid_index() or -1
+        )
         if first_valid_sma_idx is not None:
             data = data.loc[first_valid_sma_idx:]
 
@@ -201,7 +212,7 @@ class WorkflowContext(t.NamedTuple):
             return self
         data: pd.DataFrame = self.data.copy()
         price: pd.Series = data[Col.PRICE.value]
-        sma: pd.Series = data[Col.SMA.value]
+        sma: pd.Series = data[Col.SMA_FAST.value]
 
         # The reference price is the SMA when available,
         # Otherwise the market price:
@@ -226,7 +237,7 @@ class WorkflowContext(t.NamedTuple):
             return self
         data: pd.DataFrame = self.data.copy()
         price: pd.Series = data[Col.PRICE.value]
-        sma: pd.Series = data[Col.SMA.value]
+        sma: pd.Series = data[Col.SMA_FAST.value]
 
         # The reference price is the SMA when available,
         # Otherwise the market price:
@@ -257,7 +268,7 @@ class WorkflowContext(t.NamedTuple):
         price_col: str
         for price_col in (
             Col.PURCHASE.value, 
-            Col.SMA.value, 
+            Col.SMA_FAST.value, 
             Col.PRICE.value
         ):
             if  price_col in self.data.columns:
@@ -308,8 +319,8 @@ class WorkflowContext(t.NamedTuple):
         target: float = 100 * (self.invest_ratio - 1.0 )
 
         # Compute buy score:
-        if Col.SMA.value in data.columns:
-            last_sma: float = data[Col.SMA.value].dropna().iloc[-1]
+        if Col.SMA_FAST.value in data.columns:
+            last_sma: float = data[Col.SMA_FAST.value].dropna().iloc[-1]
             score: float = 100 * ((last_sma - last_price) / last_price)
             color: str = Fore.GREEN if score >= target else Fore.LIGHTWHITE_EX
             print(f"{color}Buy score: {score:.2f}%")
@@ -355,27 +366,39 @@ class WorkflowContext(t.NamedTuple):
             color="green",
         )
 
-        # SMA-X:
-        if Col.SMA.value in data.columns:
-            sma: pd.Series = data[Col.SMA.value]
+        # SMAs:
+        alpha: float
+        color: str
+        column: str
+        linestyle: str
+        sma_lenght: int
+        for column, sma_lenght, color, linestyle, alpha in [
+            (Col.SMA_FAST.value, self.sma_fast_lenght, "orange", "solid", 1.0),
+            (Col.SMA_SLOW.value, self.sma_slow_lenght, "red", "dotted", 0.75),
+        ]:
+            if not column in data.columns:
+                continue
+            sma: pd.Series = data[column]
             last_sma: float = sma.iloc[-1]
             plt.plot(
                 data.index, sma, 
-                label=f"SMA-{self.sma_lenght}: {last_sma:.2f}",
-                linewidth=2, color="orange",
+                label=f"SMA-{sma_lenght}: {last_sma:.2f}",
+                alpha=alpha, color=color, 
+                linewidth=2, linestyle=linestyle,
             )
-            plt.scatter(
-                [last_date], [last_sma],
-                s=80, zorder=3, color="orange",
-                alpha=0.75, marker=">"
-            )
-            plt.annotate(
-                f"{last_sma:.2f}", 
-                (last_date, last_sma), 
-                xytext=(10,-5), 
-                textcoords="offset points", 
-                color="orange",
-            )
+            if linestyle == "solid":
+                plt.scatter(
+                    [last_date], [last_sma],
+                    s=80, zorder=3, color=color,
+                    alpha=0.75 * alpha, marker=">"
+                )
+                plt.annotate(
+                    f"{last_sma:.2f}", 
+                    (last_date, last_sma), 
+                    xytext=(10,-5), 
+                    textcoords="offset points", 
+                    color=color,
+                )
 
         # Plot investment activities:
         purchase_col: str = Col.PURCHASE.value
@@ -440,7 +463,7 @@ class WorkflowContext(t.NamedTuple):
 
         plt.title(
             f"{self.security} ({self.company_name}) - "
-            f"Market price with SMA({self.sma_lenght})"
+            f"Market price with SMA({self.sma_fast_lenght})"
         )
         plt.xlabel("Date")
         plt.ylabel(f"Price ({currency})")
@@ -540,7 +563,7 @@ def run(
             **kwargs
         ).load()
         .append_last_price()
-        .compute_sma()
+        .compute_SMAs()
         .parse_purchases()
         .compute_enter_prices()
         .compute_exit_prices()

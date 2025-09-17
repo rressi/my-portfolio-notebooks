@@ -107,11 +107,11 @@ def find_buy_opportunities(
         (
             workflow.WorkflowContext(
                 security=ticker,
-                sma_lenght=sma_lenght,
+                sma_fast_lenght=sma_lenght,
             )
             .load()
             .append_last_price()
-            .compute_sma()
+            .compute_SMAs()
             .compute_enter_prices()
             .compute_exit_prices()
             .print_last_prices()
