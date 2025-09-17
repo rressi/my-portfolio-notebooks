@@ -31,7 +31,7 @@ class WorkflowContext(t.NamedTuple):
     last_enter_prices: t.Sequence[float] = tuple()
     last_exit_prices: t.Sequence[float] = tuple()
     operations: pd.DataFrame = pd.DataFrame()
-    sma_lenght: int = 20
+    sma_lenght: int = 10
     start_date: str | pd.Timestamp = "2025-06-01"
     ticker: yf.Ticker | None = None
 
@@ -205,15 +205,16 @@ class WorkflowContext(t.NamedTuple):
 
         # The reference price is the SMA when available,
         # Otherwise the market price:
-        price = sma.combine_first(price)
+        price = sma.combine_first(price).dropna()
 
         last_enter_prices: t.Sequence[float] = []
         x: int
         for x in range(1, 4):
-            enter_col: str = f"{Col.ENTER.value} #{x}"
             k: float = self.invest_ratio ** (-x)
-            data[enter_col] = k * price
-            last_enter_prices.append(data[enter_col].iloc[-1])
+            enter: pd.Series = (k * price).dropna()
+            enter_col: str = f"{Col.ENTER.value} #{x}"
+            data[enter_col] = enter
+            last_enter_prices.append(enter.iloc[-1])
 
         return self._replace(
             data=data,
@@ -229,21 +230,22 @@ class WorkflowContext(t.NamedTuple):
 
         # The reference price is the SMA when available,
         # Otherwise the market price:
-        price = sma.combine_first(price)
+        price = sma.combine_first(price).dropna()
 
         # The reference price is the avg. purchase price when
         # available, otherwise the market price:
         if Col.PURCHASE.value in data.columns:
             purchase: pd.Series = data[Col.PURCHASE.value]
-            price = purchase.combine_first(price)
+            price = purchase.combine_first(price).dropna()
 
         last_exit_prices: t.Sequence[float] = []
         x: int
         for x in range(1, 4):
-            exit_col: str = f"{Col.EXIT.value} #{x}"
             k: float = self.invest_ratio ** x
-            data[exit_col] = k * price
-            last_exit_prices.append(data[exit_col].iloc[-1])
+            exit: pd.Series = (k * price).dropna()
+            exit_col: str = f"{Col.EXIT.value} #{x}"
+            data[exit_col] = exit
+            last_exit_prices.append(exit.iloc[-1])
 
         return self._replace(
             data=data,
@@ -300,14 +302,14 @@ class WorkflowContext(t.NamedTuple):
             return self
 
         data: pd.DataFrame = self.data
-        last_price: float = data[Col.PRICE.value].iloc[-1]
+        last_price: float = data[Col.PRICE.value].dropna().iloc[-1]
 
-        # With an invest ration of 1.05, the target is 5%:
+        # With an invest ration of 1.05, the target would be 5%:
         target: float = 100 * (self.invest_ratio - 1.0 )
 
         # Compute buy score:
         if Col.SMA.value in data.columns:
-            last_sma: float = data[Col.SMA.value].iloc[-1]
+            last_sma: float = data[Col.SMA.value].dropna().iloc[-1]
             score: float = 100 * ((last_sma - last_price) / last_price)
             color: str = Fore.GREEN if score >= target else Fore.LIGHTWHITE_EX
             print(f"{color}Buy score: {score:.2f}%")

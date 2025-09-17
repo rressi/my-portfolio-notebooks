@@ -50,7 +50,9 @@ tickers = [
     "ZGLD.SW", 
 ]
 
-def find_buy_opportunities():
+def find_buy_opportunities(
+        sma_lenght=5,
+):
 
     results = []
 
@@ -65,41 +67,48 @@ def find_buy_opportunities():
                 interval="1d",
             )
         )
-        if len(df) < 20:
+        if len(df) < sma_lenght:
             print(f"{ticker_name}: not enought data points ({len(df)})")
             continue  # troppo pochi dati
 
-        ma20 = df['Close'].rolling(window=20).mean()
-        last_close = df['Close'].iloc[-1]
-        last_ma20 = ma20.iloc[-1]
-        if pd.isna(last_ma20):
-            print(f"{ticker_name}: last_ma20 is NaN")
-            continue
+        close: pd.Series = df['Close']
+        sma: pd.Series = close.rolling(
+            window=sma_lenght,
+        ).mean()
 
-        diff_pct = (last_close - last_ma20) / last_ma20 * 100
+        last_close: float = close.iloc[-1]
+        last_sma: float = sma.iloc[-1]
+        if pd.isna(last_sma):
+            print(f"{ticker_name}: last_sma is NaN")
+            continue
+        diff_pct: float = (last_close - last_sma) / last_sma * 100
+
         results.append({
             'Ticker': ticker_name,
             'Company': company_name,
             'Close': round(last_close, 2),
-            'MA20': round(last_ma20, 2),
-            '% from MA20': round(diff_pct, 2)
+            'SMA': round(last_sma, 2),
+            '% from SMA': round(diff_pct, 2)
         })
 
     # crea tabella ordinata per scostamento (dal più negativo)
-    table = pd.DataFrame(results).sort_values('% from MA20')
+    table = pd.DataFrame(results).sort_values('% from SMA')
     # display(table)
 
-    candidates = table[table['% from MA20'] <= -1]
+    candidates = table[table['% from SMA'] <= -1]
     display(candidates)
 
-    for ticker, company, pct_from_ma20 in zip(
+    for ticker, company, pct_from_sma in zip(
         candidates["Ticker"], 
         candidates["Company"],
-        candidates["% from MA20"]
+        candidates["% from SMA"]
     ):
-        print(f"{ticker} - {company} - buy score: {-pct_from_ma20}%")
+        print(f"{ticker} - {company} - buy score: {-pct_from_sma}%")
         (
-            workflow.WorkflowContext(security=ticker)
+            workflow.WorkflowContext(
+                security=ticker,
+                sma_lenght=sma_lenght,
+            )
             .load()
             .append_last_price()
             .compute_sma()
