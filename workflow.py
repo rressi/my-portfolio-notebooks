@@ -11,7 +11,6 @@ import currency
 
 
 class Col(enum.StrEnum):
-    AMOUNT="amount"
     DATE="date"
     ENTER = "enter"
     EXIT = "exit"
@@ -155,7 +154,9 @@ class WorkflowContext(t.NamedTuple):
         )
 
         # Convert date to pd.Datetime and make it the index of the DataFrame:
-        operations[Col.DATE.value] = pd.to_datetime(operations[Col.DATE.value])
+        operations[Col.DATE.value] = pd.to_datetime(
+            operations[Col.DATE.value],
+        )
         operations = operations.sort_values(Col.DATE.value)
         operations[Col.DATE.value] = (
             operations[Col.DATE.value]
@@ -167,16 +168,19 @@ class WorkflowContext(t.NamedTuple):
             cur: str = self.ticker.info["currency"]
             operations = currency.convert(operations, cur)
         
-        # Add a column with the transaction amount:
-        quantity: pd.Series = operations[Col.QUANTITY.value]
-        price: pd.Series = operations[Col.PRICE.value]
-        operations[Col.AMOUNT.value] = price * quantity
-
         data: pd.DataFrame = self.data.copy()
-        first_date: pd.Timestamp = data.index[0]
-        last_date: pd.Timestamp = data.index[-1]
+        from_date: pd.Timestamp = (
+            # to midnight
+            data.index[0].normalize()
+        )
+        to_date: pd.Timestamp = (
+            # to midnight
+            data.index[-1].normalize()
+            # of the next day
+            + pd.Timedelta(days=1)
+        )
 
-        # Compute average price:
+        # Compute average purchase price:
         avg_price = 0.0
         tot_cost = 0.0
         tot_quantity = 0.0
@@ -191,9 +195,10 @@ class WorkflowContext(t.NamedTuple):
                 avg_price = 0.0
                 tot_cost = 0.0
                 tot_quantity = 0.0
-            if first_date <= date <= last_date:
-                data.loc[date, Col.PURCHASE.value] = avg_price
-                data.loc[date, Col.QUANTITY.value] = tot_quantity
+            if from_date <= date < to_date:
+                insert_date: pd.Timestamp = date.normalize() # Reset to 00:00:00
+                data.loc[insert_date, Col.PURCHASE.value] = avg_price
+                data.loc[insert_date, Col.QUANTITY.value] = tot_quantity
 
         # The columns 'purchase' and 'quantity' are forward filled,
         # but only where 'quantity' is > 0
@@ -212,17 +217,25 @@ class WorkflowContext(t.NamedTuple):
             return self
         data: pd.DataFrame = self.data.copy()
         price: pd.Series = data[Col.PRICE.value]
-        sma: pd.Series = data[Col.SMA_FAST.value]
+        sma_fast: pd.Series = data[Col.SMA_FAST.value]
+        sma_slow: pd.Series = data[Col.SMA_SLOW.value]
 
-        # The reference price is the SMA when available,
-        # Otherwise the market price:
-        price = sma.combine_first(price).dropna()
+        # Generate the serie of reference prices to compute
+        # investment enter prices:
+        #  - take the max of the 2 SMA series, where available.
+        #  - take the market price as fall-back strategy.
+        reference_price: pd.Series = (
+            sma_fast
+            .combine(sma_slow, max)
+            .combine_first(price).dropna()
+        )
 
+        # Goes X% down from the reference price at each step:
         last_enter_prices: t.Sequence[float] = []
         x: int
         for x in range(1, 4):
             k: float = self.invest_ratio ** (-x)
-            enter: pd.Series = (k * price).dropna()
+            enter: pd.Series = (k * reference_price).dropna()
             enter_col: str = f"{Col.ENTER.value} #{x}"
             data[enter_col] = enter
             last_enter_prices.append(enter.iloc[-1])

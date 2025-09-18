@@ -49,13 +49,15 @@ def import_file(
     # 3) Sort by date ascending (assuming day-first format, e.g. DD/MM/YYYY)
     df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
     df = df.sort_values("date")
-    df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+    df["date"] = df["date"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # 6) Save to CSV with comma as field separator
-    output_file: Path = (
-        input_file.parent 
-        / f"{input_file.stem}.out.{input_file.suffix}"
-    )
+    output_file_name: str = "".join((
+        input_file.stem.removesuffix(".in"),
+        ".out",
+        input_file.suffix,
+    ))
+    output_file: Path = input_file.parent / output_file_name
     df.to_csv(output_file, index=False)
 
 
