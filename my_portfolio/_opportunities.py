@@ -2,7 +2,10 @@ from IPython.display import display
 import pandas as pd
 import yfinance as yf
 
-import workflow
+from my_portfolio._workflow import(
+    Context as WorkflowContext,
+    get_company_name,
+)
 
 
 tickers = [
@@ -58,7 +61,7 @@ def find_buy_opportunities(
 
     for ticker_name in tickers:
         ticker: yf.Ticker = yf.Ticker(ticker_name)
-        company_name: str = workflow.get_company_name(ticker)
+        company_name: str = get_company_name(ticker)
         # print(f"Processing {ticker_name} - {company_name}...")
 
         df: pd.DataFrame = (
@@ -105,7 +108,7 @@ def find_buy_opportunities(
     ):
         print(f"{ticker} - {company} - buy score: {-pct_from_sma}%")
         (
-            workflow.WorkflowContext(
+            WorkflowContext(
                 security=ticker,
                 sma_fast_lenght=sma_lenght,
             )

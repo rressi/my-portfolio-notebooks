@@ -7,10 +7,12 @@ import pandas as pd
 import typing as t
 import yfinance as yf
 
-import currency
+from my_portfolio._currency import (
+    convert as convert_currency,
+)
 
 
-class Col(enum.StrEnum):
+class Column(enum.StrEnum):
     DATE="date"
     ENTER = "enter"
     EXIT = "exit"
@@ -21,7 +23,7 @@ class Col(enum.StrEnum):
     SMA_SLOW = "sma-slow"
 
 
-class WorkflowContext(t.NamedTuple):
+class Context(t.NamedTuple):
     security: str
     ops: str = ""
     
@@ -55,7 +57,7 @@ class WorkflowContext(t.NamedTuple):
                 interval="1d",
             )
             [["Close"]]
-            .rename(columns={"Close": Col.PRICE.value})
+            .rename(columns={"Close": Column.PRICE.value})
             .sort_index()
         )
         if data.empty:
@@ -100,7 +102,7 @@ class WorkflowContext(t.NamedTuple):
         if self.data.empty:
             return self
 
-        price: pd.Series = self.data[Col.PRICE.value]
+        price: pd.Series = self.data[Column.PRICE.value]
         sna_fast: pd.Series = price.rolling(
             window=self.sma_fast_lenght,
         ).mean()
@@ -109,8 +111,8 @@ class WorkflowContext(t.NamedTuple):
         ).mean()
 
         data: pd.DataFrame = self.data.copy()
-        data[Col.SMA_FAST.value] = sna_fast
-        data[Col.SMA_SLOW.value] = sna_slow
+        data[Column.SMA_FAST.value] = sna_fast
+        data[Column.SMA_SLOW.value] = sna_slow
 
         # Remove items before the date of the first valid SMA
         first_valid_sma_idx = max(
@@ -154,19 +156,19 @@ class WorkflowContext(t.NamedTuple):
         )
 
         # Convert date to pd.Datetime and make it the index of the DataFrame:
-        operations[Col.DATE.value] = pd.to_datetime(
-            operations[Col.DATE.value],
+        operations[Column.DATE.value] = pd.to_datetime(
+            operations[Column.DATE.value],
         )
-        operations = operations.sort_values(Col.DATE.value)
-        operations[Col.DATE.value] = (
-            operations[Col.DATE.value]
+        operations = operations.sort_values(Column.DATE.value)
+        operations[Column.DATE.value] = (
+            operations[Column.DATE.value]
             .dt.tz_localize(self.data.index.tz)
         )
-        operations = operations.set_index(Col.DATE.value).sort_index()
+        operations = operations.set_index(Column.DATE.value).sort_index()
 
         if "currency" in operations.columns:
             cur: str = self.ticker.info["currency"]
-            operations = currency.convert(operations, cur)
+            operations = convert_currency(operations, cur)
         
         data: pd.DataFrame = self.data.copy()
         from_date: pd.Timestamp = (
@@ -197,15 +199,15 @@ class WorkflowContext(t.NamedTuple):
                 tot_quantity = 0.0
             if from_date <= date < to_date:
                 insert_date: pd.Timestamp = date.normalize() # Reset to 00:00:00
-                data.loc[insert_date, Col.PURCHASE.value] = avg_price
-                data.loc[insert_date, Col.QUANTITY.value] = tot_quantity
+                data.loc[insert_date, Column.PURCHASE.value] = avg_price
+                data.loc[insert_date, Column.QUANTITY.value] = tot_quantity
 
         # The columns 'purchase' and 'quantity' are forward filled,
         # but only where 'quantity' is > 0
-        data[Col.PURCHASE.value] = data[Col.PURCHASE.value].ffill()
-        data[Col.QUANTITY.value] = data[Col.QUANTITY.value].ffill()
-        mask: pd.Series = data[Col.QUANTITY.value] > 0
-        data.loc[mask != True, [Col.QUANTITY.value, Col.PURCHASE.value]] = pd.NA
+        data[Column.PURCHASE.value] = data[Column.PURCHASE.value].ffill()
+        data[Column.QUANTITY.value] = data[Column.QUANTITY.value].ffill()
+        mask: pd.Series = data[Column.QUANTITY.value] > 0
+        data.loc[mask != True, [Column.QUANTITY.value, Column.PURCHASE.value]] = pd.NA
 
         return self._replace(
             operations=operations,
@@ -216,9 +218,9 @@ class WorkflowContext(t.NamedTuple):
         if self.data.empty:
             return self
         data: pd.DataFrame = self.data.copy()
-        price: pd.Series = data[Col.PRICE.value]
-        sma_fast: pd.Series = data[Col.SMA_FAST.value]
-        sma_slow: pd.Series = data[Col.SMA_SLOW.value]
+        price: pd.Series = data[Column.PRICE.value]
+        sma_fast: pd.Series = data[Column.SMA_FAST.value]
+        sma_slow: pd.Series = data[Column.SMA_SLOW.value]
 
         # Generate the serie of reference prices to compute
         # investment enter prices:
@@ -236,7 +238,7 @@ class WorkflowContext(t.NamedTuple):
         for x in range(1, 4):
             k: float = self.invest_ratio ** (-x)
             enter: pd.Series = (k * reference_price).dropna()
-            enter_col: str = f"{Col.ENTER.value} #{x}"
+            enter_col: str = f"{Column.ENTER.value} #{x}"
             data[enter_col] = enter
             last_enter_prices.append(enter.iloc[-1])
 
@@ -249,8 +251,8 @@ class WorkflowContext(t.NamedTuple):
         if self.data.empty:
             return self
         data: pd.DataFrame = self.data.copy()
-        price: pd.Series = data[Col.PRICE.value]
-        sma: pd.Series = data[Col.SMA_FAST.value]
+        price: pd.Series = data[Column.PRICE.value]
+        sma: pd.Series = data[Column.SMA_FAST.value]
 
         # The reference price is the SMA when available,
         # Otherwise the market price:
@@ -258,8 +260,8 @@ class WorkflowContext(t.NamedTuple):
 
         # The reference price is the avg. purchase price when
         # available, otherwise the market price:
-        if Col.PURCHASE.value in data.columns:
-            purchase: pd.Series = data[Col.PURCHASE.value]
+        if Column.PURCHASE.value in data.columns:
+            purchase: pd.Series = data[Column.PURCHASE.value]
             price = purchase.combine_first(price).dropna()
 
         last_exit_prices: t.Sequence[float] = []
@@ -267,7 +269,7 @@ class WorkflowContext(t.NamedTuple):
         for x in range(1, 4):
             k: float = self.invest_ratio ** x
             exit: pd.Series = (k * price).dropna()
-            exit_col: str = f"{Col.EXIT.value} #{x}"
+            exit_col: str = f"{Column.EXIT.value} #{x}"
             data[exit_col] = exit
             last_exit_prices.append(exit.iloc[-1])
 
@@ -280,9 +282,9 @@ class WorkflowContext(t.NamedTuple):
         last_price: float = pd.NA
         price_col: str
         for price_col in (
-            Col.PURCHASE.value, 
-            Col.SMA_FAST.value, 
-            Col.PRICE.value
+            Column.PURCHASE.value, 
+            Column.SMA_FAST.value, 
+            Column.PRICE.value
         ):
             if  price_col in self.data.columns:
                 last_price = self.data[price_col].iloc[-1]
@@ -326,21 +328,21 @@ class WorkflowContext(t.NamedTuple):
             return self
 
         data: pd.DataFrame = self.data
-        last_price: float = data[Col.PRICE.value].dropna().iloc[-1]
+        last_price: float = data[Column.PRICE.value].dropna().iloc[-1]
 
         # With an invest ration of 1.05, the target would be 5%:
         target: float = 100 * (self.invest_ratio - 1.0 )
 
         # Compute buy score:
-        if Col.SMA_FAST.value in data.columns:
-            last_sma: float = data[Col.SMA_FAST.value].dropna().iloc[-1]
+        if Column.SMA_FAST.value in data.columns:
+            last_sma: float = data[Column.SMA_FAST.value].dropna().iloc[-1]
             score: float = 100 * ((last_sma - last_price) / last_price)
             color: str = Fore.GREEN if score >= target else Fore.LIGHTWHITE_EX
             print(f"{color}Buy score: {score:.2f}%")
 
         # Compute sell score:
-        if Col.PURCHASE.value in data.columns:
-            last_purchase: float = self.data[Col.PURCHASE.value].iloc[-1]
+        if Column.PURCHASE.value in data.columns:
+            last_purchase: float = self.data[Column.PURCHASE.value].iloc[-1]
             if not pd.isna(last_purchase):
                 score: float = 100 * (last_price - last_purchase) / last_purchase
                 color = Fore.YELLOW if score >= target else Fore.LIGHTWHITE_EX
@@ -359,7 +361,7 @@ class WorkflowContext(t.NamedTuple):
         plt.figure(figsize=(12,6))
 
         # Market prices:
-        price: pd.Series = data[Col.PRICE.value]
+        price: pd.Series = data[Column.PRICE.value]
         last_price: float = price.iloc[-1]
         plt.plot(
             data.index, price, 
@@ -386,8 +388,8 @@ class WorkflowContext(t.NamedTuple):
         linestyle: str
         sma_lenght: int
         for column, sma_lenght, color, linestyle, alpha in [
-            (Col.SMA_FAST.value, self.sma_fast_lenght, "orange", "solid", 1.0),
-            (Col.SMA_SLOW.value, self.sma_slow_lenght, "red", "dotted", 0.75),
+            (Column.SMA_FAST.value, self.sma_fast_lenght, "orange", "solid", 1.0),
+            (Column.SMA_SLOW.value, self.sma_slow_lenght, "red", "dotted", 0.75),
         ]:
             if not column in data.columns:
                 continue
@@ -414,10 +416,10 @@ class WorkflowContext(t.NamedTuple):
                 )
 
         # Plot investment activities:
-        purchase_col: str = Col.PURCHASE.value
+        purchase_col: str = Column.PURCHASE.value
         if purchase_col in data.columns:
             last_valid_purchase: float = float(
-                data[Col.PURCHASE.value].dropna().iloc[-1]
+                data[Column.PURCHASE.value].dropna().iloc[-1]
             )
             plt.plot(
                 data.index, data[purchase_col], 
@@ -425,7 +427,7 @@ class WorkflowContext(t.NamedTuple):
                 linewidth=2, color="blue",
             )
             last_purchase: float = float(
-                data[Col.PURCHASE.value].iloc[-1]
+                data[Column.PURCHASE.value].iloc[-1]
             )
             if not pd.isna(last_purchase):
                 plt.scatter(
@@ -443,8 +445,8 @@ class WorkflowContext(t.NamedTuple):
         if not self.operations.empty:
             for date, price, quantity in zip(
                 self.operations.index, 
-                self.operations[Col.PRICE.value],
-                self.operations[Col.QUANTITY.value],
+                self.operations[Column.PRICE.value],
+                self.operations[Column.QUANTITY.value],
             ):
                 if first_date <= date <= last_date: 
                     plt.scatter(
@@ -460,14 +462,14 @@ class WorkflowContext(t.NamedTuple):
             for i, price in enumerate(self.last_enter_prices):
                 self.plot_price_level(
                     color="gray",
-                    column=f"{Col.ENTER.value} #{i + 1}",
+                    column=f"{Column.ENTER.value} #{i + 1}",
                     price=price,
                 )
         if self.last_exit_prices:
             for i, price in enumerate(self.last_exit_prices):
                 self.plot_price_level(
                     color="gray",
-                    column=f"{Col.EXIT.value} #{i + 1}",
+                    column=f"{Column.EXIT.value} #{i + 1}",
                     price=price,
                 )
 
@@ -570,7 +572,7 @@ def run(
         **kwargs
 ):
     (
-        WorkflowContext(
+        Context(
             security=security,
             ops=ops,
             **kwargs
