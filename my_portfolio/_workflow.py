@@ -9,16 +9,19 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import yfinance as yf
 
+from my_portfolio._currency import (
+    to_currency as convert_currency,
+)
 from my_portfolio._import_trades import (
     import_many_trades,
 )
-from my_portfolio._currency import (
-    to_currency as convert_currency,
+from my_portfolio._numerics import (
+    first_non_na,
 )
 
 
 class Column(enum.StrEnum):
-    DATE="date"
+    DATE = "date"
     ENTER = "enter"
     EXIT = "exit"
     PRICE = "price"  # Market price
@@ -30,12 +33,16 @@ class Column(enum.StrEnum):
 
 class Context(t.NamedTuple):
     security: str
-    
+
     company_name: str = ""
     data: pd.DataFrame = pd.DataFrame()
     invest_ratio: float = 1.05
+    last_date: pd.Timestamp | None = None
     last_enter_prices: t.Sequence[float] = tuple()
     last_exit_prices: t.Sequence[float] = tuple()
+    last_price: float = pd.NA
+    market_date: pd.Timestamp | None = None
+    market_price: float = pd.NA
     operations: pd.DataFrame = pd.DataFrame()
     sma_fast_lenght: int = 10
     sma_slow_lenght: int = 20
@@ -47,61 +54,85 @@ class Context(t.NamedTuple):
         company_name: str = get_company_name(ticker)
         tz_name = ticker.info.get("exchangeTimezoneName")
 
-        start_date: pd.Timestamp = (
-            pd.Timestamp(self.start_date)
-            .tz_localize(tz_name)
-        )
+        start_date: pd.Timestamp = pd.Timestamp(self.start_date).tz_localize(tz_name)
         start_date_before: pd.Timestamp = min(
             start_date - pd.Timedelta(days=self.sma_fast_lenght + 1),
-            start_date - pd.Timedelta(days=self.sma_slow_lenght + 1)
+            start_date - pd.Timedelta(days=self.sma_slow_lenght + 1),
         )
         data: pd.DataFrame = (
             ticker.history(
-                start=start_date_before, 
+                start=start_date_before,
                 interval="1d",
-            )
-            [["Close"]]
+            )[["Close"]]
             .rename(columns={"Close": Column.PRICE.value})
             .sort_index()
         )
         if data.empty:
             raise ValueError(f"No data found for {self.security}")
-        
+
         return self._replace(
             company_name=company_name,
             data=data,
             start_date=start_date,
             ticker=ticker,
         )
-    
-    def append_last_price(self) -> t.Self:
+
+    def handle_last_price(self) -> t.Self:
         if self.data.empty:
             return self
-
-        last_price: float | None = (
-            self.ticker.fast_info.get("last_price", None)
+        
+        market_hourly: pd.DataFrame = self.ticker.history(
+            period="4d",
+            interval="1h",
+            prepost=False,
+            auto_adjust=False,
+        ).dropna(
+            subset=["Close"],
         )
-        if last_price is None:
-            return self
+        if market_hourly.empty:
+            last_market_date: pd.Timestamp = self.data.index[-1]
+            last_market_price: float = self.data[Column.PRICE.value].iloc[-1]
+            return self._replace(
+                market_date=last_market_date,
+                market_price=last_market_price,
+            )
 
-        tz=data.index.tz
-        current_date: pd.Timestamp = (
-            pd.Timestamp.now(tz=tz)
-            .normalize()
+        last_market_date: pd.Timestamp = market_hourly.index[-1]
+        last_market_price: float = self.data[Column.PRICE.value].iloc[-1]
+
+        prepost_hourly: pd.DataFrame = self.ticker.history(
+            period="4d",
+            interval="1h",
+            prepost=True,
+            auto_adjust=False,
+        ).dropna(
+            subset=["Close"],
         )
-        data = pd.concat([
-            data,
-            pd.DataFrame(
-                data={"Price": last_price},
-                index=[current_date],
-            ),
-        ])
-        data = data[~data.index.duplicated(keep='last')]
+        if prepost_hourly.empty:
+            return self._replace(
+                market_date=last_market_date,
+                market_price=last_market_price,
+            )
+
+        last_date: pd.Timestamp = last_market_date
+        last_price: float = last_market_price
+
+        last_prepos_date: pd.Timestamp = prepost_hourly.index[-1]
+        last_prepos_price: float = prepost_hourly["Close"].iloc[-1]
+        if (
+            last_prepos_date > last_market_date
+            and not pd.isna(last_prepos_price)
+        ):
+            last_date = last_prepos_date.normalize() + pd.Timedelta(days=1)
+            last_price = last_prepos_price
 
         return self._replace(
-            data=data,
+            market_date=last_market_date.normalize(),
+            market_price=last_market_price,
+            last_date=last_date,
+            last_price=last_price,
         )
-    
+
     def compute_SMAs(self) -> t.Self:
         if self.data.empty:
             return self
@@ -120,8 +151,7 @@ class Context(t.NamedTuple):
 
         # Remove items before the date of the first valid SMA
         first_valid_sma_idx = max(
-            sna_fast.first_valid_index() or -1,
-            sna_slow.first_valid_index() or -1
+            sna_fast.first_valid_index() or -1, sna_slow.first_valid_index() or -1
         )
         if first_valid_sma_idx is not None:
             data = data.loc[first_valid_sma_idx:]
@@ -129,39 +159,31 @@ class Context(t.NamedTuple):
         return self._replace(
             data=data,
         )
-    
+
     def import_trades(self) -> t.Self:
         if self.data.empty:
             return self
-        
+
         operations: pd.DataFrame = import_many_trades(
-            data_folder=Path("data"),
-            sql_path=Path("data/import.sql")
+            data_folder=Path("data"), sql_path=Path("data/import.sql")
         )
 
         selected_ticker: str = self.security
-        match (
-            self.ticker.info.get('quoteType'),
-            self.ticker.info.get("fromCurrency")
-        ):
-            case ['CRYPTOCURRENCY', crypto_ticker]:
+        match (self.ticker.info.get("quoteType"), self.ticker.info.get("fromCurrency")):
+            case ["CRYPTOCURRENCY", crypto_ticker]:
                 selected_ticker = crypto_ticker
 
-        operations = operations[
-            operations["ticker"] == selected_ticker
-        ]
+        operations = operations[operations["ticker"] == selected_ticker]
         if operations.empty:
             return self
-        
+
         # Converts the timestamps
-        operations = operations.tz_convert(
-            self.data.index.tz
-        )
+        operations = operations.tz_convert(self.data.index.tz)
 
         if "currency" in operations.columns:
             ticker_cur: str = self.ticker.info["currency"]
             operations = convert_currency(operations, ticker_cur)
-        
+
         data: pd.DataFrame = self.data.copy()
         from_date: pd.Timestamp = (
             # to midnight
@@ -211,10 +233,7 @@ class Context(t.NamedTuple):
         if data[col_purchase].dropna().empty:
             return self  # There is no actual purchasing data left
 
-        return self._replace(
-            operations=operations,
-            data=data
-        )
+        return self._replace(operations=operations, data=data)
 
     def compute_enter_prices(self) -> t.Self:
         if self.data.empty:
@@ -229,9 +248,7 @@ class Context(t.NamedTuple):
         #  - take the max of the 2 SMA series, where available.
         #  - take the market price as fall-back strategy.
         reference_price: pd.Series = (
-            sma_fast
-            .combine(sma_slow, max)
-            .combine_first(price).dropna()
+            sma_fast.combine(sma_slow, max).combine_first(price).dropna()
         )
 
         # Goes X% down from the reference price at each step:
@@ -248,7 +265,7 @@ class Context(t.NamedTuple):
             data=data,
             last_enter_prices=last_enter_prices,
         )
-    
+
     def compute_exit_prices(self) -> t.Self:
         if self.data.empty:
             return self
@@ -269,7 +286,7 @@ class Context(t.NamedTuple):
         last_exit_prices: t.Sequence[float] = []
         x: int
         for x in range(1, 4):
-            k: float = self.invest_ratio ** x
+            k: float = self.invest_ratio**x
             exit: pd.Series = (k * price).dropna()
             exit_col: str = f"{Column.EXIT.value} #{x}"
             data[exit_col] = exit
@@ -281,45 +298,46 @@ class Context(t.NamedTuple):
         )
 
     def print_last_prices(self) -> t.Self:
-        last_price: float = pd.NA
-        price_col: str
-        for price_col in (
-            Column.PURCHASE.value, 
-            Column.SMA_FAST.value, 
-            Column.PRICE.value
+        reference_price: float = pd.NA
+        for price_candidate in (
+            Column.PURCHASE,
+            Column.SMA_FAST,
+            Column.SMA_SLOW,
+            self.last_price,
+            Column.PRICE,
         ):
-            if  price_col in self.data.columns:
-                last_price = self.data[price_col].iloc[-1]
-            if not pd.isna(last_price):
-                break
-        if pd.isna(last_price):
+            match price_candidate:
+                case float(price) if not pd.isna(price):
+                    print("Price get directly", price)
+                    reference_price = price
+                    break
+                case Column(column) if column.value in self.data.columns:
+                    price: float = self.data[column.value].iloc[-1]
+                    if not pd.isna(price):
+                        reference_price = price
+                        break
+        if pd.isna(reference_price):
             return self
 
         def _represent_price(
             pos: int,
             price: float | None,
         ) -> str:
-            if price is None:
+            if pd.isna(price):
                 return "N/A"
             if isinstance(price, float):
                 if pos < 0:
                     return f"{Fore.GREEN}{price:,.2f}{Style.RESET_ALL}"
                 if pos == 0:
-                    return f"{price:.2f}"
+                    return f"{price:,.2f}"
                 if pos > 0:
                     return f"{Fore.YELLOW}{price:,.2f}{Style.RESET_ALL}"
             return str(price)
-        
+
         prices: t.Sequence[str] = [
-            *(
-                _represent_price(-1, price) 
-                for price in sorted(self.last_enter_prices)
-            ),
-            _represent_price(0, last_price),
-            *(
-                _represent_price(1, price) 
-                for price in sorted(self.last_exit_prices)
-            ),
+            *(_represent_price(-1, price) for price in sorted(self.last_enter_prices)),
+            _represent_price(0, reference_price),
+            *(_represent_price(1, price) for price in sorted(self.last_exit_prices)),
         ]
         print("Prices:", " | ".join(prices))
 
@@ -330,58 +348,105 @@ class Context(t.NamedTuple):
             return self
 
         data: pd.DataFrame = self.data
-        last_price: float = data[Column.PRICE.value].dropna().iloc[-1]
+        reference_price: float = self.last_price
+        if pd.isna(reference_price):
+            return self
 
         # With an invest ration of 1.05, the target would be 5%:
-        target: float = 100 * (self.invest_ratio - 1.0 )
+        target_score: float = 100 * (self.invest_ratio - 1.0)
 
         # Compute buy score:
         if Column.SMA_FAST.value in data.columns:
             last_sma: float = data[Column.SMA_FAST.value].dropna().iloc[-1]
-            score: float = 100 * ((last_sma - last_price) / last_price)
-            color: str = Fore.GREEN if score >= target else Fore.LIGHTWHITE_EX
-            print(f"{color}Buy score: {score:.2f}%")
+            if not pd.isna(last_sma):
+                score: float = 100 * ((last_sma - reference_price) / reference_price)
+                color: str = Fore.GREEN if score >= target_score else Fore.LIGHTWHITE_EX
+                print(f"{color}Buy score: {score:.2f}%")
 
         # Compute sell score:
         if Column.PURCHASE.value in data.columns:
             last_purchase: float = self.data[Column.PURCHASE.value].iloc[-1]
             if not pd.isna(last_purchase):
-                score: float = 100 * (last_price - last_purchase) / last_purchase
-                color = Fore.YELLOW if score >= target else Fore.LIGHTWHITE_EX
+                score: float = 100 * (reference_price - last_purchase) / last_purchase
+                color = Fore.YELLOW if score >= target_score else Fore.LIGHTWHITE_EX
                 print(f"{color}Sell score: {score:.2f}%")
 
         return self
 
     def plot(self) -> t.Self:
-        if self.data.empty:
-            return self
-        
         data: pd.DataFrame = self.data
-        first_date: pd.Timestamp = data.index[0]
-        last_date: pd.Timestamp = data.index[-1]
+        if data.empty:
+            return self
 
-        plt.figure(figsize=(12,6))
+        first_date: pd.Timestamp = data.index[0]
+        last_date: pd.Timestamp = first_non_na(
+            self.last_date,
+            data.index[-1],
+        )
+        market_price: pd.Series = data[Column.PRICE.value]
+        last_market_price: float = first_non_na(
+            self.market_price,
+            market_price.iloc[-1],
+        )
+
+        plt.figure(figsize=(12, 6))
+
+        # Last price:
+        annotate_market_price: bool = True
+        if not pd.isna(self.last_price) and self.last_price != self.market_price:
+            annotate_market_price = False
+            plt.plot(
+                [self.market_date, self.last_date],  # x-coordinates
+                [last_market_price, self.last_price],  # y-coordinates
+                color="purple",
+                label=f"Last price: {self.last_price:,.2f}",
+                linestyle="--",
+                linewidth=1,
+            )
+            plt.scatter(
+                [self.last_date],
+                [self.last_price],
+                alpha=0.75,
+                color="purple",
+                marker=">",
+                s=80,
+                zorder=3,
+            )
+            plt.annotate(
+                f"{self.last_price:,.2f}",
+                (self.last_date, self.last_price),
+                color="purple",
+                textcoords="offset points",
+                xytext=(10, -5),
+                zorder=10,
+            )
 
         # Market prices:
-        price: pd.Series = data[Column.PRICE.value]
-        last_price: float = price.iloc[-1]
-        plt.plot(
-            data.index, price, 
-            label=f"Market price: {last_price:.2f}",
-            linewidth=2, color="green",
-        )
-        plt.scatter(
-            [last_date], [last_price],
-            s=80, zorder=3, color="green",
-            alpha=0.75, marker=">"
-        )
-        plt.annotate(
-            f"{last_price:.2f}", 
-            (last_date, last_price), 
-            xytext=(10,-5),
-            textcoords="offset points", 
-            color="green",
-        )
+        if not market_price.dropna().empty:
+            plt.plot(
+                data.index,
+                market_price,
+                color="green",
+                label=f"Market price: {last_market_price:,.2f}",
+                linewidth=2,
+            )
+            if annotate_market_price:
+                plt.scatter(
+                    [last_date],
+                    [last_market_price],
+                    alpha=0.75,
+                    color="green",
+                    marker=">",
+                    s=80,
+                    zorder=3,
+                )
+                plt.annotate(
+                    f"{last_market_price:,.2f}",
+                    (last_date, last_market_price),
+                    color="green",
+                    textcoords="offset points",
+                    xytext=(10, -5),
+                )
 
         # SMAs:
         alpha: float
@@ -398,22 +463,29 @@ class Context(t.NamedTuple):
             sma: pd.Series = data[column]
             last_sma: float = sma.iloc[-1]
             plt.plot(
-                data.index, sma, 
+                data.index,
+                sma,
                 label=f"SMA-{sma_lenght}: {last_sma:.2f}",
-                alpha=alpha, color=color, 
-                linewidth=2, linestyle=linestyle,
+                alpha=alpha,
+                color=color,
+                linewidth=2,
+                linestyle=linestyle,
             )
             if linestyle == "solid":
                 plt.scatter(
-                    [last_date], [last_sma],
-                    s=80, zorder=3, color=color,
-                    alpha=0.75 * alpha, marker=">"
+                    [last_date],
+                    [last_sma],
+                    s=80,
+                    zorder=3,
+                    color=color,
+                    alpha=0.75 * alpha,
+                    marker=">",
                 )
                 plt.annotate(
-                    f"{last_sma:.2f}", 
-                    (last_date, last_sma), 
-                    xytext=(10,-5), 
-                    textcoords="offset points", 
+                    f"{last_sma:.2f}",
+                    (last_date, last_sma),
+                    xytext=(10, -5),
+                    textcoords="offset points",
                     color=color,
                 )
 
@@ -425,36 +497,42 @@ class Context(t.NamedTuple):
                 data[Column.PURCHASE.value].dropna().iloc[-1]
             )
             plt.plot(
-                data.index, data[purchase_col], 
+                data.index,
+                data[purchase_col],
                 label=f"Avg. purch. price: {last_valid_purchase:.2f}",
-                linewidth=2, color="blue",
+                linewidth=2,
+                color="blue",
             )
-            last_purchase: float = float(
-                data[Column.PURCHASE.value].iloc[-1]
-            )
+            last_purchase: float = float(data[Column.PURCHASE.value].iloc[-1])
             if not pd.isna(last_purchase):
                 plt.scatter(
-                    [last_date], [last_purchase],
-                    s=80, zorder=3, color="blue",
-                    alpha=0.75, marker=">"
+                    [last_date],
+                    [last_purchase],
+                    s=80,
+                    zorder=3,
+                    color="blue",
+                    alpha=0.75,
+                    marker=">",
                 )
                 plt.annotate(
-                    f"{last_purchase:.2f}", 
-                    (last_date, last_purchase), 
-                    xytext=(10,-5), 
-                    textcoords="offset points", 
+                    f"{last_purchase:.2f}",
+                    (last_date, last_purchase),
+                    xytext=(10, -5),
+                    textcoords="offset points",
                     color="blue",
                 )
         if not self.operations.empty:
             for date, price, quantity in zip(
-                self.operations.index, 
+                self.operations.index,
                 self.operations[Column.PRICE.value],
                 self.operations[Column.QUANTITY.value],
             ):
-                if first_date <= date <= last_date: 
+                if first_date <= date <= last_date:
                     plt.scatter(
-                        [date], [price],
-                        s=80, zorder=3, 
+                        [date],
+                        [price],
+                        s=80,
+                        zorder=3,
                         color="lightgreen" if quantity > 0 else "red",
                         marker="o",
                         alpha=0.5,
@@ -486,7 +564,7 @@ class Context(t.NamedTuple):
         plt.xlabel("Date")
         plt.ylabel(f"Price ({currency})")
         plt.legend(
-            loc="center left", 
+            loc="center left",
             bbox_to_anchor=(1e-2, 0.5),
         )
         plt.grid(True)
@@ -511,7 +589,7 @@ class Context(t.NamedTuple):
             )
 
     def show_company_table(self) -> t.Self:
-        ticker:yf.Ticker = self.ticker or yf.Ticker(self.security)
+        ticker: yf.Ticker = self.ticker or yf.Ticker(self.security)
         info = dict(ticker.info)
 
         revenue: int | None = info.get("totalRevenue", None)
@@ -543,7 +621,7 @@ class Context(t.NamedTuple):
         return self
 
     def show_status(self) -> t.Self:
-        ticker:yf.Ticker = self.ticker or yf.Ticker(self.security)
+        ticker: yf.Ticker = self.ticker or yf.Ticker(self.security)
         fast_info: dict[str, t.Any] = dict(ticker.fast_info)
 
         def _get_field(key: str) -> str:
@@ -558,8 +636,7 @@ class Context(t.NamedTuple):
             return value
 
         data: dict[str, t.Sequence[str | None]] = {
-            _get_field(key): [_get_value(key)]
-            for key in fast_info.keys()
+            _get_field(key): [_get_value(key)] for key in fast_info.keys()
         }
         df = pd.DataFrame(
             data=data,
@@ -569,16 +646,11 @@ class Context(t.NamedTuple):
         return self
 
 
-def run(
-        security: str, 
-        **kwargs
-):
+def run(security: str, **kwargs):
     (
-        Context(
-            security=security,
-            **kwargs
-        ).load()
-        .append_last_price()
+        Context(security=security, **kwargs)
+        .load()
+        .handle_last_price()
         .compute_SMAs()
         .import_trades()
         .compute_enter_prices()
@@ -592,7 +664,7 @@ def run(
 
 
 def get_company_name(
-        ticker: yf.Ticker,
+    ticker: yf.Ticker,
 ) -> str | None:
     company_name: str = ticker.info.get("shortName")
     if company_name is None:

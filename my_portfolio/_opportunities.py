@@ -113,7 +113,7 @@ def find_buy_opportunities(
                 sma_fast_lenght=sma_lenght,
             )
             .load()
-            .append_last_price()
+            .handle_last_price()
             .compute_SMAs()
             .compute_enter_prices()
             .compute_exit_prices()
