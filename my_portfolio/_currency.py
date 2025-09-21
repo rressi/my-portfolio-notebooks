@@ -4,39 +4,43 @@ import pandas as pd
 import typing as t
 import yfinance as yf
 
-def convert(
-        data: pd.DataFrame, 
-        to_ccy: str,
-):
-    if "currency" not in data.columns:
-        raise ValueError("Column 'currency' is missing")
-    if "price" not in data.columns:
-        raise ValueError("Column 'price' is missing")
-    if (data["currency"] == to_ccy).all():
-        return data # There is nothing to convert.
 
-    date_start: str = (
-        data.index[0] - timedelta(days=7)
-    ).strftime("%Y-%m-%d")
-    date_end: str = (
-        data.index[-1] + timedelta(days=1)
-    ).strftime("%Y-%m-%d")
+def to_currency(
+    data: pd.DataFrame,
+    to_ccy: str,
+    selected_columns: t.Sequence[str] = ("price", "cost", "net amount"),
+    currency_column: str = "currency",
+):
+    if currency_column not in data.columns:
+        raise ValueError(f"Currency column '{currency_column}' is missing")
+    
+    if (data[currency_column] == to_ccy).all():
+        return data  # There is nothing to convert.
+
+    selected_columns = sorted(
+        set(selected_columns) & set(data.columns)
+    )
+    if not selected_columns:
+        return data  # There is nothing to convert.
+
+    date_start: str = (data.index[0] - timedelta(days=7)).strftime("%Y-%m-%d")
+    date_end: str = (data.index[-1] + timedelta(days=7)).strftime("%Y-%m-%d")
     to_tz = data.index.tz
-    
+
     cached_rates: dict[str, pd.Series] = {}
-    
-    def _get_rates(from_ccy: str, to_ccy: str) -> pd.Series | None:
+
+    def _get_rate_history(from_ccy: str, to_ccy: str) -> pd.Series | None:
         symbol: str = f"{from_ccy}{to_ccy}=X".upper()
         if symbol in cached_rates:
             return cached_rates[symbol]
-        
+
         ticker: yf.Ticker = yf.Ticker(symbol)
         tz_name: str = ticker.info.get("exchangeTimezoneName")
 
         df: pd.DataFrame = (
             ticker.history(
-                start=pd.Timestamp(date_start).tz_localize(tz_name), 
-                end=pd.Timestamp(date_end).tz_localize(tz_name), 
+                start=pd.Timestamp(date_start).tz_localize(tz_name),
+                end=pd.Timestamp(date_end).tz_localize(tz_name),
                 interval="1d",
             ).sort_index()
         ).tz_convert(to_tz)
@@ -51,39 +55,61 @@ def convert(
 
         cached_rates[symbol] = rates
         return rates
-    
-    date: pd.Datetime
+
+    cached_rates_at: dict[tuple[str, str, str], float] = {}
+
+    def _get_rate_at(from_ccy: str, to_ccy: str, at_date: str) -> float:
+        input = (from_ccy, to_ccy, at_date)
+
+        cached_rate: float | None
+        if cached_rate := cached_rates_at.get(input):
+            return cached_rate
+
+        direct_rates: pd.Series | None = _get_rate_history(from_ccy, to_ccy)
+        if isinstance(direct_rates, pd.Series):
+            rate: float = direct_rates[at_date]
+            cached_rates_at[input] = rate
+            return rate
+
+        inverted_rates: pd.Series | None = _get_rate_history(to_ccy, from_ccy)
+        if isinstance(direct_rates, pd.Series):
+            rate: float = 1 / inverted_rates[at_date]
+            cached_rates_at[input] = rate
+            return rate
+
+        raise ValueError(
+            f"Unsupporte currency conversion '{from_ccy}' -> '{to_ccy}'"
+        )
+
+    converted_values: dict[str, list[float]] = {
+        column: [] for column in selected_columns
+    }
+
+    # Perform the currency conversion for the entire data-set:
+    timestamp: pd.Datetime
     row: t.Mapping[str, float | str]
-    new_prices: t.Sequence[float] = []
-    for date, row in data.iterrows():
-        price: float = row["price"]
-        if pd.isna(price):
-            new_prices.append(pd.NA)
-            continue
-
-        from_ccy: str = row["currency"].upper().strip()
-        if from_ccy == to_ccy:
-            new_prices.append(price)
-            continue
-
-        date_s: str = date.strftime("%Y-%m-%d")
-
-        rate: float | None = None
-        rates: pd.Series | None = _get_rates(from_ccy, to_ccy)
-        if isinstance(rates, pd.Series):
-            rate = rates[date_s]
-        else:
-            rates = _get_rates(to_ccy, from_ccy)
-            if isinstance(rate, pd.Series):
-                rate = 1 / rates[date_s]
-        if rate is None:
-            raise ValueError(
-                f"Unsupporte currency conversion '{from_ccy}' -> '{to_ccy}'"
+    for timestamp, row in data.iterrows():
+        date: str = timestamp.strftime("%Y-%m-%d")
+        for column in selected_columns:
+            value: float = row[column]
+            if pd.isna(value):
+                converted_values[column].append(pd.NA)
+                continue
+            from_ccy: str = row[currency_column].upper().strip()
+            if from_ccy == to_ccy:
+                converted_values[column].append(value)
+                continue
+            rate: float = _get_rate_at(
+                from_ccy=from_ccy,
+                to_ccy=to_ccy,
+                at_date=date,
             )
+            converted_values[column].append(value * rate)
 
-        new_prices.append(price * rate)
-
+    # Apply the changes to the data-frame:
     data = data.copy()
-    data["currency"] = to_ccy
-    data["price"] = new_prices
+    data[currency_column] = to_ccy
+    for column in selected_columns:
+        data[column] = converted_values[column]
+
     return data

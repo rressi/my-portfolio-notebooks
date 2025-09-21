@@ -1,14 +1,19 @@
 from colorama import Fore, Style
 import enum
 import io
+from pathlib import Path
+import typing as t
+
 from IPython.display import display
 import matplotlib.pyplot as plt
 import pandas as pd
-import typing as t
 import yfinance as yf
 
+from my_portfolio._import_trades import (
+    import_many_trades,
+)
 from my_portfolio._currency import (
-    convert as convert_currency,
+    to_currency as convert_currency,
 )
 
 
@@ -25,7 +30,6 @@ class Column(enum.StrEnum):
 
 class Context(t.NamedTuple):
     security: str
-    ops: str = ""
     
     company_name: str = ""
     data: pd.DataFrame = pd.DataFrame()
@@ -126,49 +130,37 @@ class Context(t.NamedTuple):
             data=data,
         )
     
-    def parse_purchases(self) -> t.Self:
+    def import_trades(self) -> t.Self:
         if self.data.empty:
             return self
-
-        # Clean operations input:
-        ops_csv: str = "\n".join(
-            line.strip()
-            for line in self.ops.splitlines()
-            if line.strip()
+        
+        operations: pd.DataFrame = import_many_trades(
+            data_folder=Path("data"),
+            sql_path=Path("data/import.sql")
         )
-        if not ops_csv:
-            return self        
 
-        # Read investment operations:
-        operations: pd.DataFrame = pd.read_csv(
-            t.cast(t.IO[str], io.StringIO(ops_csv)),
-            comment="#",
-            header=0,
-        )
+        selected_ticker: str = self.security
+        match (
+            self.ticker.info.get('quoteType'),
+            self.ticker.info.get("fromCurrency")
+        ):
+            case ['CRYPTOCURRENCY', crypto_ticker]:
+                selected_ticker = crypto_ticker
+
+        operations = operations[
+            operations["ticker"] == selected_ticker
+        ]
         if operations.empty:
             return self
         
-        # Clean column names:
-        operations.columns = (
-            operations.columns
-            .str.strip()        # rimuove spazi all'inizio e alla fine
-            .str.lower()        # converte in minuscolo
+        # Converts the timestamps
+        operations = operations.tz_convert(
+            self.data.index.tz
         )
-
-        # Convert date to pd.Datetime and make it the index of the DataFrame:
-        operations[Column.DATE.value] = pd.to_datetime(
-            operations[Column.DATE.value],
-        )
-        operations = operations.sort_values(Column.DATE.value)
-        operations[Column.DATE.value] = (
-            operations[Column.DATE.value]
-            .dt.tz_localize(self.data.index.tz)
-        )
-        operations = operations.set_index(Column.DATE.value).sort_index()
 
         if "currency" in operations.columns:
-            cur: str = self.ticker.info["currency"]
-            operations = convert_currency(operations, cur)
+            ticker_cur: str = self.ticker.info["currency"]
+            operations = convert_currency(operations, ticker_cur)
         
         data: pd.DataFrame = self.data.copy()
         from_date: pd.Timestamp = (
@@ -182,15 +174,20 @@ class Context(t.NamedTuple):
             + pd.Timedelta(days=1)
         )
 
+        col_quantity: str = Column.QUANTITY.value
+        col_purchase: str = Column.PURCHASE.value
+
         # Compute average purchase price:
-        avg_price = 0.0
-        tot_cost = 0.0
-        tot_quantity = 0.0
+        avg_price: float = 0.0
+        tot_cost: float = 0.0
+        tot_quantity: float = 0.0
+        date: pd.Timestamp
+        row: t.Mapping[str, t.Any]
         for date, row in operations.iterrows():
-            quantity: int = row["quantity"]
+            price: float = row["price"]
+            quantity: float = row["quantity"]
             tot_quantity += quantity
-            if tot_quantity > 0:
-                price: float = row["price"]
+            if tot_quantity > 0.0:
                 tot_cost += quantity * price
                 avg_price = tot_cost / tot_quantity
             else:
@@ -198,16 +195,21 @@ class Context(t.NamedTuple):
                 tot_cost = 0.0
                 tot_quantity = 0.0
             if from_date <= date < to_date:
-                insert_date: pd.Timestamp = date.normalize() # Reset to 00:00:00
-                data.loc[insert_date, Column.PURCHASE.value] = avg_price
-                data.loc[insert_date, Column.QUANTITY.value] = tot_quantity
+                insert_date: pd.Timestamp = date.normalize()
+                data.loc[insert_date, col_purchase] = avg_price
+                data.loc[insert_date, col_quantity] = tot_quantity
+
+        if col_purchase not in data.columns:
+            return self  # No items inserted.
 
         # The columns 'purchase' and 'quantity' are forward filled,
         # but only where 'quantity' is > 0
-        data[Column.PURCHASE.value] = data[Column.PURCHASE.value].ffill()
-        data[Column.QUANTITY.value] = data[Column.QUANTITY.value].ffill()
-        mask: pd.Series = data[Column.QUANTITY.value] > 0
-        data.loc[mask != True, [Column.QUANTITY.value, Column.PURCHASE.value]] = pd.NA
+        data[col_quantity] = data[col_quantity].ffill()
+        data[col_purchase] = data[col_purchase].ffill()
+        mask: pd.Series = data[col_quantity] > 0.0
+        data.loc[mask != True, [col_quantity, col_purchase]] = pd.NA
+        if data[col_purchase].dropna().empty:
+            return self  # There is no actual purchasing data left
 
         return self._replace(
             operations=operations,
@@ -418,6 +420,7 @@ class Context(t.NamedTuple):
         # Plot investment activities:
         purchase_col: str = Column.PURCHASE.value
         if purchase_col in data.columns:
+            purchases: pd.Series = data[Column.PURCHASE.value].dropna()
             last_valid_purchase: float = float(
                 data[Column.PURCHASE.value].dropna().iloc[-1]
             )
@@ -568,18 +571,16 @@ class Context(t.NamedTuple):
 
 def run(
         security: str, 
-        ops: str="", 
         **kwargs
 ):
     (
         Context(
             security=security,
-            ops=ops,
             **kwargs
         ).load()
         .append_last_price()
         .compute_SMAs()
-        .parse_purchases()
+        .import_trades()
         .compute_enter_prices()
         .compute_exit_prices()
         .print_last_prices()
