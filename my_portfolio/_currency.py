@@ -67,12 +67,14 @@ def to_currency(
 
         direct_rates: pd.Series | None = _get_rate_history(from_ccy, to_ccy)
         if isinstance(direct_rates, pd.Series):
+            at_date = min(at_date, direct_rates.index[-1])
             rate: float = direct_rates[at_date]
             cached_rates_at[input] = rate
             return rate
 
         inverted_rates: pd.Series | None = _get_rate_history(to_ccy, from_ccy)
         if isinstance(direct_rates, pd.Series):
+            at_date = min(at_date, inverted_rates.index[-1])
             rate: float = 1 / inverted_rates[at_date]
             cached_rates_at[input] = rate
             return rate

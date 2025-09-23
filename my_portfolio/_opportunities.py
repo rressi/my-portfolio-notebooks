@@ -2,7 +2,7 @@ from IPython.display import display
 import pandas as pd
 import yfinance as yf
 
-from my_portfolio._workflow import(
+from my_portfolio._workflow import (
     Context as WorkflowContext,
     get_company_name,
 )
@@ -29,12 +29,13 @@ tickers = [
     "GOOGL",
     "IBM",
     "INTC",
-    "KLAC", 
-    "LRCX", 
+    "KLAC",
+    "LRCX",
     "META",
-    "MPWR", 
-    "MSFT", 
-    "MU", 
+    "MPWR",
+    "MSFT",
+    "MU",
+    "NBIS",
     "NOW",
     "NVDA",
     "NVTS",
@@ -42,19 +43,20 @@ tickers = [
     "PLTR",
     "QCOM",
     "RACE",
-    "SMCI", 
-    "STX", 
+    "SMCI",
+    "STX",
     "TSLA",
-    "TSM", 
-    "TXN", 
+    "TSM",
+    "TXN",
     "WDC",
     # "XAU-USD",
     "XRP-EUR",
-    "ZGLD.SW", 
+    "ZGLD.SW",
 ]
 
+
 def find_buy_opportunities(
-        sma_lenght=5,
+    sma_lenght=5,
 ):
 
     results = []
@@ -62,19 +64,17 @@ def find_buy_opportunities(
     for ticker_name in tickers:
         ticker: yf.Ticker = yf.Ticker(ticker_name)
         company_name: str = get_company_name(ticker)
-        # print(f"Processing {ticker_name} - {company_name}...")
+        print(f"Processing {ticker_name} - {company_name}...")
 
-        df: pd.DataFrame = (
-            ticker.history(
-                period="1mo",
-                interval="1d",
-            )
+        df: pd.DataFrame = ticker.history(
+            period="1mo",
+            interval="1d",
         )
         if len(df) < sma_lenght:
             print(f"{ticker_name}: not enought data points ({len(df)})")
             continue  # troppo pochi dati
 
-        close: pd.Series = df['Close']
+        close: pd.Series = df["Close"]
         sma: pd.Series = close.rolling(
             window=sma_lenght,
         ).mean()
@@ -86,25 +86,25 @@ def find_buy_opportunities(
             continue
         diff_pct: float = (last_close - last_sma) / last_sma * 100
 
-        results.append({
-            'Ticker': ticker_name,
-            'Company': company_name,
-            'Close': round(last_close, 2),
-            'SMA': round(last_sma, 2),
-            '% from SMA': round(diff_pct, 2)
-        })
+        results.append(
+            {
+                "Ticker": ticker_name,
+                "Company": company_name,
+                "Close": round(last_close, 2),
+                "SMA": round(last_sma, 2),
+                "% from SMA": round(diff_pct, 2),
+            }
+        )
 
     # crea tabella ordinata per scostamento (dal più negativo)
-    table = pd.DataFrame(results).sort_values('% from SMA')
+    table = pd.DataFrame(results).sort_values("% from SMA")
     # display(table)
 
-    candidates = table[table['% from SMA'] <= -1]
+    candidates = table[table["% from SMA"] <= -1]
     display(candidates)
 
     for ticker, company, pct_from_sma in zip(
-        candidates["Ticker"], 
-        candidates["Company"],
-        candidates["% from SMA"]
+        candidates["Ticker"], candidates["Company"], candidates["% from SMA"]
     ):
         print(f"{ticker} - {company} - buy score: {-pct_from_sma}%")
         (
