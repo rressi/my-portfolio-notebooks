@@ -21,6 +21,8 @@ from my_portfolio._numerics import (
 
 
 class Column(enum.StrEnum):
+    BALANCE = "balance"
+    CUM_QUANTITY = "cum-quantity"
     DATE = "date"
     ENTER = "enter"
     EXIT = "exit"
@@ -44,6 +46,8 @@ class Context(t.NamedTuple):
     market_date: pd.Timestamp | None = None
     market_price: float = pd.NA
     operations: pd.DataFrame = pd.DataFrame()
+    purchase_date: pd.Timestamp | None = None
+    purchase_price: float = pd.NA
     sma_fast_lenght: int = 10
     sma_slow_lenght: int = 20
     start_date: str | pd.Timestamp = "2025-06-01"
@@ -80,7 +84,7 @@ class Context(t.NamedTuple):
     def handle_last_price(self) -> t.Self:
         if self.data.empty:
             return self
-        
+
         market_hourly: pd.DataFrame = self.ticker.history(
             period="4d",
             interval="1h",
@@ -196,29 +200,43 @@ class Context(t.NamedTuple):
             + pd.Timedelta(days=1)
         )
 
-        col_quantity: str = Column.QUANTITY.value
+        col_balance: str = Column.BALANCE.value
+        col_cum_quantity: str = Column.CUM_QUANTITY.value
         col_purchase: str = Column.PURCHASE.value
-
+        col_quantity: str = Column.QUANTITY.value
+    
         # Compute average purchase price:
-        avg_price: float = 0.0
+        purchase_price: float = 0.0
         tot_cost: float = 0.0
         tot_quantity: float = 0.0
-        date: pd.Timestamp
+        purchase_date: pd.Timestamp
+        balance: float = 0.0
         row: t.Mapping[str, t.Any]
-        for date, row in operations.iterrows():
+        for purchase_date, row in operations.iterrows():
+            costs: float = row["costs"]
             price: float = row["price"]
             quantity: float = row["quantity"]
+
+            balance -= (costs + (price * quantity))
             tot_quantity += quantity
-            if tot_quantity > 0.0:
-                tot_cost += quantity * price
-                avg_price = tot_cost / tot_quantity
-            else:
-                avg_price = 0.0
+
+            if tot_quantity <= 0.0:
+                purchase_price = 0.0
                 tot_cost = 0.0
                 tot_quantity = 0.0
-            if from_date <= date < to_date:
-                insert_date: pd.Timestamp = date.normalize()
-                data.loc[insert_date, col_purchase] = avg_price
+            elif quantity < 0.0:
+                tot_cost += quantity * purchase_price
+            else:
+                tot_cost += quantity * price
+                purchase_price = tot_cost / tot_quantity
+
+            operations.loc[purchase_date, col_purchase] = purchase_price
+            operations.loc[purchase_date, col_cum_quantity] = tot_quantity
+            operations.loc[purchase_date, col_balance] = balance
+
+            if from_date <= purchase_date < to_date:
+                insert_date: pd.Timestamp = purchase_date.normalize()
+                data.loc[insert_date, col_purchase] = purchase_price
                 data.loc[insert_date, col_quantity] = tot_quantity
 
         if col_purchase not in data.columns:
@@ -233,7 +251,12 @@ class Context(t.NamedTuple):
         if data[col_purchase].dropna().empty:
             return self  # There is no actual purchasing data left
 
-        return self._replace(operations=operations, data=data)
+        return self._replace(
+            data=data,
+            operations=operations,
+            purchase_price=purchase_price,
+            purchase_date=purchase_date,
+        )
 
     def compute_enter_prices(self) -> t.Self:
         if self.data.empty:
@@ -300,6 +323,7 @@ class Context(t.NamedTuple):
     def print_last_prices(self) -> t.Self:
         reference_price: float = pd.NA
         for price_candidate in (
+            self.purchase_price,
             Column.PURCHASE,
             Column.SMA_FAST,
             Column.SMA_SLOW,
@@ -308,7 +332,6 @@ class Context(t.NamedTuple):
         ):
             match price_candidate:
                 case float(price) if not pd.isna(price):
-                    print("Price get directly", price)
                     reference_price = price
                     break
                 case Column(column) if column.value in self.data.columns:
@@ -494,7 +517,7 @@ class Context(t.NamedTuple):
         if purchase_col in data.columns:
             purchases: pd.Series = data[Column.PURCHASE.value].dropna()
             last_valid_purchase: float = float(
-                data[Column.PURCHASE.value].dropna().iloc[-1]
+                purchases.dropna().iloc[-1]
             )
             plt.plot(
                 data.index,
@@ -503,7 +526,7 @@ class Context(t.NamedTuple):
                 linewidth=2,
                 color="blue",
             )
-            last_purchase: float = float(data[Column.PURCHASE.value].iloc[-1])
+            last_purchase: float = float(purchases.iloc[-1])
             if not pd.isna(last_purchase):
                 plt.scatter(
                     [last_date],
@@ -620,6 +643,89 @@ class Context(t.NamedTuple):
         display(df.T)
         return self
 
+    def show_operations(self) -> t.Self:
+        if self.operations.empty:
+            print("No operations found.")
+            return self
+
+        col_price: str = Column.PRICE.value
+        col_quantity: str = Column.QUANTITY.value
+        report_column: list[str] = [
+            "At",
+            "Unit price",
+            "Quantity",
+        ]
+
+        last_ops = self.operations.tail(10)
+        min_quantity = first_non_na(
+            last_ops[col_quantity].min(), 1.0
+        )
+        
+        def _format_date(date: pd.Timestamp) -> str:
+            return date.strftime("%Y-%m-%d %H:%M")
+
+        def _format_price(price: float) -> str:
+            return f"{price:,.2f}"
+
+        def _format_quantity(quantity: float) -> str:
+            if min_quantity >= 1:
+                return f"{quantity:,.0f}"
+            if min_quantity >= 0.1:
+                return f"{quantity:,.3f}"
+            else:
+                return f"{quantity:,.6f}"
+        
+        report: pd.DataFrame = pd.DataFrame()
+        report.index = last_ops.index
+        report["Time"] = last_ops.index.map(_format_date)
+        report["Quantity"] = last_ops[col_quantity].map(_format_quantity)
+        report["Price"] = last_ops[col_price].map(_format_price)
+        report["Tot"] = (last_ops[col_quantity] * last_ops[col_price]).map(_format_price)
+
+        col_cum_quantity: str = Column.CUM_QUANTITY.value
+        if col_cum_quantity in last_ops.columns:
+            report["Wallet"] = (
+                last_ops[col_cum_quantity].map(_format_quantity)
+            )
+            report_column.append(col_cum_quantity)
+
+        col_purhcase: str = Column.PURCHASE.value
+        if col_purhcase in last_ops.columns:
+            report["Avg. price"] = last_ops[col_purhcase].map(_format_price)
+            report_column.append(col_purhcase)
+
+        col_balance: str = Column.BALANCE.value
+        if (
+            col_balance in last_ops.columns
+            and col_cum_quantity in last_ops.columns
+        ):
+            report["Balance"] = (
+                (last_ops[col_price] * last_ops[col_cum_quantity])
+                + last_ops[col_balance] 
+            ).map(_format_price)
+            report_column.append(col_balance)
+
+            last_price: float = pd.NA
+            last_date: pd.Timestamp | None = None
+            last_quantity: float = last_ops[col_cum_quantity].iloc[-1]
+            if last_quantity > 0.0:
+                last_date = first_non_na(self.last_date, self.market_date)
+                last_price=first_non_na(self.last_price, self.market_price)
+
+            # Add a summary line with the last price:
+            if (last_date is not None and not pd.isna(last_price)):
+                last_balance: float = last_ops[col_balance].iloc[-1] + (last_price * last_quantity)
+                report.loc[last_date, "Time"] = _format_date(last_date)
+                report.loc[last_date, "Quantity"] = _format_quantity(last_quantity)
+                report.loc[last_date, "Price"] = _format_price(last_price)
+                report.loc[last_date, "Tot"] = _format_price(last_price * last_quantity)
+                report.loc[last_date, "Wallet"] = _format_quantity(last_quantity)
+                report.loc[last_date, "Balance"] = _format_price(last_balance)          
+
+        report = report.set_index("Time")
+        display(report)
+        return self
+
     def show_status(self) -> t.Self:
         ticker: yf.Ticker = self.ticker or yf.Ticker(self.security)
         fast_info: dict[str, t.Any] = dict(ticker.fast_info)
@@ -658,6 +764,7 @@ def run(security: str, **kwargs):
         .print_last_prices()
         .print_scores()
         .plot()
+        .show_operations()
         .show_company_table()
         .show_status()
     )
