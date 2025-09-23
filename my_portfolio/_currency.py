@@ -8,7 +8,7 @@ import yfinance as yf
 def to_currency(
     data: pd.DataFrame,
     to_ccy: str,
-    selected_columns: t.Sequence[str] = ("price", "cost", "net amount"),
+    selected_columns: t.Sequence[str] = ("price", "cost"),
     currency_column: str = "currency",
 ):
     if currency_column not in data.columns:

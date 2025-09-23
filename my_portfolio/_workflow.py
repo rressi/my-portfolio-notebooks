@@ -515,7 +515,7 @@ class Context(t.NamedTuple):
         # Plot investment activities:
         purchase_col: str = Column.PURCHASE.value
         if purchase_col in data.columns:
-            purchases: pd.Series = data[Column.PURCHASE.value].dropna()
+            purchases: pd.Series = data[Column.PURCHASE.value]
             last_valid_purchase: float = float(
                 purchases.dropna().iloc[-1]
             )

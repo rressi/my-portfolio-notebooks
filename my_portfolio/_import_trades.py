@@ -62,7 +62,6 @@ def import_trades(
     #   - ticker     : stock symbol
     #   - price      : unit price of the transaction
     #   - costs      : transaction costs/fees
-    #   - net amount : net cash amount of the transaction
     #   - currency   : transaction currency (e.g., USD)
     #   - quantity   : positive for buys, negative for sells
     trades: pd.DataFrame
