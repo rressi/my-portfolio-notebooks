@@ -11,25 +11,18 @@
 -- Example: A sale of 10 NVDA shares will show quantity = -10.
 
 SELECT
-  substr("Data", 7, 4) || '-' || substr("Data", 4, 2) || '-' || substr("Data", 1, 2) || ' ' || substr("Data", 12, 8) AS date,
-  "ISIN",
+  substr(t."Data", 7, 4) || '-' || substr(t."Data", 4, 2) || '-' || substr(t."Data", 1, 2) || ' ' || substr(t."Data", 12, 8) AS date,
+  t."ISIN",
+  t."Simbolo" || COALESCE(s.suffix, '') AS ticker,
+  t."Prezzo unit."  AS price,
+  t."Costi"         AS costs,
+  t."Valuta"        AS currency,
   CASE
-    WHEN "ISIN" LIKE 'CH%' THEN "Simbolo" || '.SW'
-    WHEN "ISIN" LIKE 'DE%' THEN "Simbolo" || '.DE'
-    WHEN "ISIN" LIKE 'IT%' THEN "Simbolo" || '.MI'
-    WHEN "ISIN" LIKE 'FR%' THEN "Simbolo" || '.PA'
-    WHEN "ISIN" LIKE 'GB%' THEN "Simbolo" || '.L'
-    WHEN "ISIN" LIKE 'CA%' THEN "Simbolo" || '.TO'
-    WHEN "ISIN" LIKE 'US%' THEN "Simbolo"
-    ELSE "Simbolo"  -- fallback se non riconosciuto
-  END AS ticker,
-  "Prezzo unit."  AS price,
-  "Costi"         AS costs,
-  "Valuta"        AS currency,
-  CASE
-    WHEN "Transazioni" = 'Vendita' THEN -CAST("Quantità" AS REAL)
-    ELSE CAST("Quantità" AS REAL)
+    WHEN t."Transazioni" = 'Vendita' THEN -CAST(t."Quantità" AS REAL)
+    ELSE CAST(t."Quantità" AS REAL)
   END AS quantity
-FROM trades
-WHERE "Transazioni" IN ('Vendita', 'Acquisto')
+FROM trades t
+LEFT JOIN isin_to_suffix s
+  ON substr(t."ISIN", 1, 2) = s.prefix
+WHERE t."Transazioni" IN ('Vendita', 'Acquisto')
 ORDER BY date;

@@ -51,6 +51,7 @@ class Context(t.NamedTuple):
     sma_fast_lenght: int = 10
     sma_slow_lenght: int = 20
     start_date: str | pd.Timestamp = "2025-06-01"
+    trades_isin: str | None = None
     ticker: yf.Ticker | None = None
 
     def load(self) -> t.Self:
@@ -123,10 +124,7 @@ class Context(t.NamedTuple):
 
         last_prepos_date: pd.Timestamp = prepost_hourly.index[-1]
         last_prepos_price: float = prepost_hourly["Close"].iloc[-1]
-        if (
-            last_prepos_date > last_market_date
-            and not pd.isna(last_prepos_price)
-        ):
+        if last_prepos_date > last_market_date and not pd.isna(last_prepos_price):
             last_date = last_prepos_date.normalize() + pd.Timedelta(days=1)
             last_price = last_prepos_price
 
@@ -172,14 +170,22 @@ class Context(t.NamedTuple):
             data_folder=Path("data"), sql_path=Path("data/import.sql")
         )
 
-        selected_ticker: str = self.security
-        match (self.ticker.info.get("quoteType"), self.ticker.info.get("fromCurrency")):
-            case ["CRYPTOCURRENCY", crypto_ticker]:
-                selected_ticker = crypto_ticker
+        if self.trades_isin is not None:
+            operations = operations[operations["ISIN"] == self.trades_isin]
+            if operations.empty:
+                print(f"No operations found for ISIN '{self.trades_isin}'")
+                return self
 
-        operations = operations[operations["ticker"] == selected_ticker]
-        if operations.empty:
-            return self
+        else:
+            selected_ticker: str = self.security
+            match (self.ticker.info.get("quoteType"), self.ticker.info.get("fromCurrency")):
+                case ["CRYPTOCURRENCY", crypto_ticker]:
+                    selected_ticker = crypto_ticker
+
+            operations = operations[operations["ticker"] == selected_ticker]
+            if operations.empty:
+                print(f"No operations found for ticker '{selected_ticker}'")
+                return self
 
         # Converts the timestamps
         operations = operations.tz_convert(self.data.index.tz)
@@ -204,7 +210,7 @@ class Context(t.NamedTuple):
         col_cum_quantity: str = Column.CUM_QUANTITY.value
         col_purchase: str = Column.PURCHASE.value
         col_quantity: str = Column.QUANTITY.value
-    
+
         # Compute average purchase price:
         purchase_price: float = 0.0
         tot_cost: float = 0.0
@@ -217,7 +223,7 @@ class Context(t.NamedTuple):
             price: float = row["price"]
             quantity: float = row["quantity"]
 
-            balance -= (costs + (price * quantity))
+            balance -= costs + (price * quantity)
             tot_quantity += quantity
 
             if tot_quantity <= 0.0:
@@ -240,8 +246,13 @@ class Context(t.NamedTuple):
                 data.loc[insert_date, col_quantity] = tot_quantity
 
         if col_purchase not in data.columns:
-            return self  # No items inserted.
-
+            # Nothing has been inserted into the data frame:
+            return self._replace(
+                operations=operations,
+                purchase_price=purchase_price,
+                purchase_date=purchase_date,
+            )
+        
         # The columns 'purchase' and 'quantity' are forward filled,
         # but only where 'quantity' is > 0
         data[col_quantity] = data[col_quantity].ffill()
@@ -249,7 +260,11 @@ class Context(t.NamedTuple):
         mask: pd.Series = data[col_quantity] > 0.0
         data.loc[mask != True, [col_quantity, col_purchase]] = pd.NA
         if data[col_purchase].dropna().empty:
-            return self  # There is no actual purchasing data left
+            return self._replace(
+                operations=operations,
+                purchase_price=purchase_price,
+                purchase_date=purchase_date,
+            )  # No valid purchase price in the data frame
 
         return self._replace(
             data=data,
@@ -516,9 +531,7 @@ class Context(t.NamedTuple):
         purchase_col: str = Column.PURCHASE.value
         if purchase_col in data.columns:
             purchases: pd.Series = data[Column.PURCHASE.value]
-            last_valid_purchase: float = float(
-                purchases.dropna().iloc[-1]
-            )
+            last_valid_purchase: float = float(purchases.dropna().iloc[-1])
             plt.plot(
                 data.index,
                 data[purchase_col],
@@ -657,10 +670,8 @@ class Context(t.NamedTuple):
         ]
 
         last_ops = self.operations.tail(10)
-        min_quantity = first_non_na(
-            last_ops[col_quantity].min(), 1.0
-        )
-        
+        min_quantity = first_non_na(last_ops[col_quantity].min(), 1.0)
+
         def _format_date(date: pd.Timestamp) -> str:
             return date.strftime("%Y-%m-%d %H:%M")
 
@@ -674,19 +685,19 @@ class Context(t.NamedTuple):
                 return f"{quantity:,.3f}"
             else:
                 return f"{quantity:,.6f}"
-        
+
         report: pd.DataFrame = pd.DataFrame()
         report.index = last_ops.index
         report["Time"] = last_ops.index.map(_format_date)
         report["Quantity"] = last_ops[col_quantity].map(_format_quantity)
         report["Price"] = last_ops[col_price].map(_format_price)
-        report["Tot"] = (last_ops[col_quantity] * last_ops[col_price]).map(_format_price)
+        report["Tot"] = (last_ops[col_quantity] * last_ops[col_price]).map(
+            _format_price
+        )
 
         col_cum_quantity: str = Column.CUM_QUANTITY.value
         if col_cum_quantity in last_ops.columns:
-            report["Wallet"] = (
-                last_ops[col_cum_quantity].map(_format_quantity)
-            )
+            report["Wallet"] = last_ops[col_cum_quantity].map(_format_quantity)
             report_column.append(col_cum_quantity)
 
         col_purhcase: str = Column.PURCHASE.value
@@ -695,13 +706,10 @@ class Context(t.NamedTuple):
             report_column.append(col_purhcase)
 
         col_balance: str = Column.BALANCE.value
-        if (
-            col_balance in last_ops.columns
-            and col_cum_quantity in last_ops.columns
-        ):
+        if col_balance in last_ops.columns and col_cum_quantity in last_ops.columns:
             report["Balance"] = (
                 (last_ops[col_price] * last_ops[col_cum_quantity])
-                + last_ops[col_balance] 
+                + last_ops[col_balance]
             ).map(_format_price)
             report_column.append(col_balance)
 
@@ -710,17 +718,19 @@ class Context(t.NamedTuple):
             last_quantity: float = last_ops[col_cum_quantity].iloc[-1]
             if last_quantity > 0.0:
                 last_date = first_non_na(self.last_date, self.market_date)
-                last_price=first_non_na(self.last_price, self.market_price)
+                last_price = first_non_na(self.last_price, self.market_price)
 
             # Add a summary line with the last price:
-            if (last_date is not None and not pd.isna(last_price)):
-                last_balance: float = last_ops[col_balance].iloc[-1] + (last_price * last_quantity)
+            if last_date is not None and not pd.isna(last_price):
+                last_balance: float = last_ops[col_balance].iloc[-1] + (
+                    last_price * last_quantity
+                )
                 report.loc[last_date, "Time"] = _format_date(last_date)
                 report.loc[last_date, "Quantity"] = _format_quantity(last_quantity)
                 report.loc[last_date, "Price"] = _format_price(last_price)
                 report.loc[last_date, "Tot"] = _format_price(last_price * last_quantity)
                 report.loc[last_date, "Wallet"] = _format_quantity(last_quantity)
-                report.loc[last_date, "Balance"] = _format_price(last_balance)          
+                report.loc[last_date, "Balance"] = _format_price(last_balance)
 
         report = report.set_index("Time")
         display(report)
