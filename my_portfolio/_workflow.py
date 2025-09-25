@@ -22,6 +22,7 @@ from my_portfolio._numerics import (
 
 class Column(enum.StrEnum):
     BALANCE = "balance"
+    COSTS = "costs"
     CUM_QUANTITY = "cum-quantity"
     DATE = "date"
     ENTER = "enter"
@@ -207,7 +208,9 @@ class Context(t.NamedTuple):
         )
 
         col_balance: str = Column.BALANCE.value
+        col_costs: str = Column.COSTS.value
         col_cum_quantity: str = Column.CUM_QUANTITY.value
+        col_price: str = Column.PRICE.value
         col_purchase: str = Column.PURCHASE.value
         col_quantity: str = Column.QUANTITY.value
 
@@ -219,9 +222,9 @@ class Context(t.NamedTuple):
         balance: float = 0.0
         row: t.Mapping[str, t.Any]
         for purchase_date, row in operations.iterrows():
-            costs: float = row["costs"]
-            price: float = row["price"]
-            quantity: float = row["quantity"]
+            costs: float = row[col_costs]
+            price: float = row[col_price]
+            quantity: float = row[col_quantity]
 
             balance -= costs + (price * quantity)
             tot_quantity += quantity
@@ -244,6 +247,12 @@ class Context(t.NamedTuple):
                 insert_date: pd.Timestamp = purchase_date.normalize()
                 data.loc[insert_date, col_purchase] = purchase_price
                 data.loc[insert_date, col_quantity] = tot_quantity
+
+        # If we don't have any stock in the wallet, then there is no
+        # valid average purchase price anymore:
+        if purchase_price <= 0.0:
+            purchase_price = pd.NA
+            purchase_date = None
 
         if col_purchase not in data.columns:
             # Nothing has been inserted into the data frame:
