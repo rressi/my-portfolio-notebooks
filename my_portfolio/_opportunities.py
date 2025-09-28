@@ -110,7 +110,7 @@ def find_buy_opportunities(
         (
             WorkflowContext(
                 security=ticker,
-                sma_fast_lenght=sma_lenght,
+                sma_5=sma_lenght,
             )
             .load()
             .handle_last_price()

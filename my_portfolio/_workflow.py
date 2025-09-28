@@ -30,8 +30,9 @@ class Column(enum.StrEnum):
     PRICE = "price"  # Market price
     PURCHASE = "purchase"  # Avg. purchase price
     QUANTITY = "quantity"
-    SMA_FAST = "sma"
-    SMA_SLOW = "sma-slow"
+    SMA_5 = "sma-10"
+    SMA_50 = "sma-50"
+    SMA_150 = "sma-150"
 
 
 class Context(t.NamedTuple):
@@ -39,7 +40,7 @@ class Context(t.NamedTuple):
 
     company_name: str = ""
     data: pd.DataFrame = pd.DataFrame()
-    invest_ratio: float = 1.05
+    invest_ratio: float = 1.03
     last_date: pd.Timestamp | None = None
     last_enter_prices: t.Sequence[float] = tuple()
     last_exit_prices: t.Sequence[float] = tuple()
@@ -49,26 +50,21 @@ class Context(t.NamedTuple):
     operations: pd.DataFrame = pd.DataFrame()
     purchase_date: pd.Timestamp | None = None
     purchase_price: float = pd.NA
-    sma_fast_lenght: int = 10
-    sma_slow_lenght: int = 20
-    start_date: str | pd.Timestamp = "2025-06-01"
+    sma_5: int = 5
+    sma_50: int = 50
+    sma_150: int = 150
     trades_isin: str | None = None
     ticker: yf.Ticker | None = None
 
     def load(self) -> t.Self:
         ticker: yf.Ticker = yf.Ticker(self.security)
         company_name: str = get_company_name(ticker)
-        tz_name = ticker.info.get("exchangeTimezoneName")
 
-        start_date: pd.Timestamp = pd.Timestamp(self.start_date).tz_localize(tz_name)
-        start_date_before: pd.Timestamp = min(
-            start_date - pd.Timedelta(days=self.sma_fast_lenght + 1),
-            start_date - pd.Timedelta(days=self.sma_slow_lenght + 1),
-        )
+        # Get the hourly data for the last month:
         data: pd.DataFrame = (
             ticker.history(
-                start=start_date_before,
-                interval="1d",
+                period="1mo",
+                interval="1h",
             )[["Close"]]
             .rename(columns={"Close": Column.PRICE.value})
             .sort_index()
@@ -79,7 +75,6 @@ class Context(t.NamedTuple):
         return self._replace(
             company_name=company_name,
             data=data,
-            start_date=start_date,
             ticker=ticker,
         )
 
@@ -87,34 +82,47 @@ class Context(t.NamedTuple):
         if self.data.empty:
             return self
 
-        market_hourly: pd.DataFrame = self.ticker.history(
-            period="4d",
-            interval="1h",
-            prepost=False,
-            auto_adjust=False,
-        ).dropna(
-            subset=["Close"],
+        # Get the 5 days market prices with 1-minute interval:
+        col_price: str = Column.PRICE.value
+        market_1m: pd.DataFrame = (
+            self.ticker.history(
+                period="5d",
+                interval="1m",
+                prepost=False,
+                auto_adjust=False,
+            )[["Close"]]
+            .rename(columns={"Close": col_price})
+            .dropna(subset=[col_price])
         )
-        if market_hourly.empty:
+
+        # If no market data is available, at 1-minute interval, 
+        # then we use the last price:
+        if market_1m.empty:
             last_market_date: pd.Timestamp = self.data.index[-1]
-            last_market_price: float = self.data[Column.PRICE.value].iloc[-1]
+            last_market_price: float = self.data[col_price].iloc[-1]
             return self._replace(
                 market_date=last_market_date,
                 market_price=last_market_price,
             )
 
-        last_market_date: pd.Timestamp = market_hourly.index[-1]
-        last_market_price: float = self.data[Column.PRICE.value].iloc[-1]
+        # The last market price is the last price at 1-minute interval:
+        last_market_date: pd.Timestamp = market_1m.index[-1]
+        last_market_price: float = market_1m[col_price].iloc[-1]
 
-        prepost_hourly: pd.DataFrame = self.ticker.history(
-            period="4d",
-            interval="1h",
-            prepost=True,
-            auto_adjust=False,
-        ).dropna(
-            subset=["Close"],
+        # Get the 5 days prices, with prepros, with 1-minute interval:
+        prepost_1m: pd.DataFrame = (
+            self.ticker.history(
+                period="5d",
+                interval="1m",
+                prepost=True,
+                auto_adjust=False,
+            )
+            .rename(columns={"Close": col_price})
+            .dropna(subset=[col_price])
         )
-        if prepost_hourly.empty:
+        if prepost_1m.empty:
+            # No pre/post market data available: 
+            # - just return with what we have:
             return self._replace(
                 market_date=last_market_date,
                 market_price=last_market_price,
@@ -123,9 +131,12 @@ class Context(t.NamedTuple):
         last_date: pd.Timestamp = last_market_date
         last_price: float = last_market_price
 
-        last_prepos_date: pd.Timestamp = prepost_hourly.index[-1]
-        last_prepos_price: float = prepost_hourly["Close"].iloc[-1]
-        if last_prepos_date > last_market_date and not pd.isna(last_prepos_price):
+        last_prepos_date: pd.Timestamp = prepost_1m.index[-1]
+        last_prepos_price: float = prepost_1m[col_price].iloc[-1]
+        if (
+            not pd.isna(last_prepos_price) 
+            and last_prepos_date > last_market_date
+        ):
             last_date = last_prepos_date.normalize() + pd.Timedelta(days=1)
             last_price = last_prepos_price
 
@@ -137,27 +148,61 @@ class Context(t.NamedTuple):
         )
 
     def compute_SMAs(self) -> t.Self:
-        if self.data.empty:
+        if self.data.empty or self.ticker is None:
             return self
 
-        price: pd.Series = self.data[Column.PRICE.value]
-        sna_fast: pd.Series = price.rolling(
-            window=self.sma_fast_lenght,
-        ).mean()
-        sna_slow: pd.Series = price.rolling(
-            window=self.sma_slow_lenght,
-        ).mean()
+        col_price: str = Column.PRICE.value
 
+        # Get the date interval to insert only operations
+        # within the range of our market data:
         data: pd.DataFrame = self.data.copy()
-        data[Column.SMA_FAST.value] = sna_fast
-        data[Column.SMA_SLOW.value] = sna_slow
-
-        # Remove items before the date of the first valid SMA
-        first_valid_sma_idx = max(
-            sna_fast.first_valid_index() or -1, sna_slow.first_valid_index() or -1
+        from_date: pd.Timestamp = (
+            # first date moved to the midnight before
+            data.index[0].normalize()
         )
-        if first_valid_sma_idx is not None:
-            data = data.loc[first_valid_sma_idx:]
+        to_date: pd.Timestamp = (
+            # last date moved to the midnight before
+            data.index[-1].normalize()
+            # but of the next day
+            + pd.Timedelta(days=1)
+        )
+
+        # Compute SMAs and insert them into the data frame:
+        for sma_col, sma_lenght, period in zip(
+            [Column.SMA_5.value, Column.SMA_50.value, Column.SMA_150.value],
+            [self.sma_5, self.sma_50, self.sma_150],
+            ["3mo", "6mo", "1y"],
+        ):
+            sma_x: pd.Series = (
+                self.ticker.history(period=period, interval="1d")
+                [["Close"]] # Get only the 'Close' column
+                .sort_index() # Sort by date (index)
+                ["Close"] # Get the 'Close' series
+                .rolling(sma_lenght) # Compute the rolling window
+                .mean() # Compute the mean over the window
+                .dropna() # Drop NaN values
+            )
+            if sma_x.empty:
+                print(
+                    f"No daily data found for {self.security}, "
+                    f"cannot compute SMA-{sma_lenght}"
+                )
+                continue
+
+            ts: pd.Timestamp
+            sma_value: float
+            for ts, sma_value in sma_x.items():
+                if from_date <= ts < to_date:
+                    insertion_ts: pd.Timestamp = get_insertion_ts(
+                        data=data, 
+                        original_ts=ts,
+                    )
+                    data.loc[insertion_ts, sma_col] = sma_value
+
+        # Fordard fill the SMAs:
+        for sma_col in [Column.SMA_5.value, Column.SMA_50.value, Column.SMA_150.value]:
+           if sma_col in data.columns:
+               data[sma_col] = data[sma_col].ffill()
 
         return self._replace(
             data=data,
@@ -188,22 +233,25 @@ class Context(t.NamedTuple):
                 print(f"No operations found for ticker '{selected_ticker}'")
                 return self
 
-        # Converts the timestamps
+        # Converts the timestamps of the operations to the timezone of the ticker:
         operations = operations.tz_convert(self.data.index.tz)
 
+        # Convert the currency of the operations to the currency of the ticker:
         if "currency" in operations.columns:
             ticker_cur: str = self.ticker.info["currency"]
             operations = convert_currency(operations, ticker_cur)
 
+        # Get the date interval to insert only operations
+        # within the range of our market data:
         data: pd.DataFrame = self.data.copy()
         from_date: pd.Timestamp = (
-            # to midnight
+            # first date moved to the midnight before
             data.index[0].normalize()
         )
         to_date: pd.Timestamp = (
-            # to midnight
+            # last date moved to the midnight before
             data.index[-1].normalize()
-            # of the next day
+            # but of the next day
             + pd.Timedelta(days=1)
         )
 
@@ -214,72 +262,90 @@ class Context(t.NamedTuple):
         col_purchase: str = Column.PURCHASE.value
         col_quantity: str = Column.QUANTITY.value
 
-        # Compute average purchase price:
+        # Compute balance and average purchase price:
         purchase_price: float = 0.0
         tot_cost: float = 0.0
         tot_quantity: float = 0.0
-        purchase_date: pd.Timestamp
+        op_ts: pd.Timestamp
         balance: float = 0.0
         row: t.Mapping[str, t.Any]
-        for purchase_date, row in operations.iterrows():
+        for op_ts, row in operations.iterrows():
             costs: float = row[col_costs]
             price: float = row[col_price]
             quantity: float = row[col_quantity]
 
+            # Update balance and total quantity:
             balance -= costs + (price * quantity)
             tot_quantity += quantity
 
             if tot_quantity <= 0.0:
+                # We sold all the stock we had in the wallet:
                 purchase_price = 0.0
                 tot_cost = 0.0
                 tot_quantity = 0.0
             elif quantity < 0.0:
+                # We sold part of the stock we had in the wallet:
+                # - The total cost is reduced
+                # - The average purchase price remains the same
                 tot_cost += quantity * purchase_price
-            else:
+            elif quantity > 0.0:
+                # We bought more stock:
+                # - The total cost is increased
+                # - The average purchase price is updated
                 tot_cost += quantity * price
                 purchase_price = tot_cost / tot_quantity
 
-            operations.loc[purchase_date, col_purchase] = purchase_price
-            operations.loc[purchase_date, col_cum_quantity] = tot_quantity
-            operations.loc[purchase_date, col_balance] = balance
+            # Add datapoing on new columns: 'purchase', 'cum-quantity', 'balance':
+            operations.loc[op_ts, col_purchase] = purchase_price
+            operations.loc[op_ts, col_cum_quantity] = tot_quantity
+            operations.loc[op_ts, col_balance] = balance
 
-            if from_date <= purchase_date < to_date:
-                insert_date: pd.Timestamp = purchase_date.normalize()
-                data.loc[insert_date, col_purchase] = purchase_price
-                data.loc[insert_date, col_quantity] = tot_quantity
+            # Insert datapoint in the data frame only if within the date range:
+            if from_date <= op_ts < to_date:
+                insertion_ts: pd.Timestamp = get_insertion_ts(
+                    data=data, 
+                    original_ts=op_ts,
+                )
+                data.loc[insertion_ts, col_purchase] = purchase_price
+                data.loc[insertion_ts, col_quantity] = tot_quantity
 
         # If we don't have any stock in the wallet, then there is no
         # valid average purchase price anymore:
-        if purchase_price <= 0.0:
+        if tot_quantity <= 0.0:
             purchase_price = pd.NA
-            purchase_date = None
+            op_ts = None
 
         if col_purchase not in data.columns:
             # Nothing has been inserted into the data frame:
             return self._replace(
                 operations=operations,
                 purchase_price=purchase_price,
-                purchase_date=purchase_date,
+                purchase_date=op_ts,
             )
         
         # The columns 'purchase' and 'quantity' are forward filled,
         # but only where 'quantity' is > 0
         data[col_quantity] = data[col_quantity].ffill()
         data[col_purchase] = data[col_purchase].ffill()
+
+        # When we don't have any stock in the wallet, then there we put NaN
+        # on the columns 'purchase' and 'quantity':
         mask: pd.Series = data[col_quantity] > 0.0
-        data.loc[mask != True, [col_quantity, col_purchase]] = pd.NA
+        data.loc[mask == False, [col_quantity, col_purchase]] = pd.NA
         if data[col_purchase].dropna().empty:
+            # No valid purchase price in the data frame:
+            # - We don't update the data frame
             return self._replace(
                 operations=operations,
                 purchase_price=purchase_price,
-                purchase_date=purchase_date,
-            )  # No valid purchase price in the data frame
+                purchase_date=op_ts,
+            )
 
         return self._replace(
             data=data,
             operations=operations,
             purchase_price=purchase_price,
-            purchase_date=purchase_date,
+            purchase_date=op_ts,
         )
 
     def compute_enter_prices(self) -> t.Self:
@@ -287,15 +353,15 @@ class Context(t.NamedTuple):
             return self
         data: pd.DataFrame = self.data.copy()
         price: pd.Series = data[Column.PRICE.value]
-        sma_fast: pd.Series = data[Column.SMA_FAST.value]
-        sma_slow: pd.Series = data[Column.SMA_SLOW.value]
+        sma_5: pd.Series = data[Column.SMA_5.value]
+        sma_50: pd.Series = data[Column.SMA_50.value]
 
         # Generate the serie of reference prices to compute
         # investment enter prices:
         #  - take the max of the 2 SMA series, where available.
         #  - take the market price as fall-back strategy.
         reference_price: pd.Series = (
-            sma_fast.combine(sma_slow, max).combine_first(price).dropna()
+            sma_5.combine(sma_50, max).combine_first(price).dropna()
         )
 
         # Goes X% down from the reference price at each step:
@@ -303,10 +369,10 @@ class Context(t.NamedTuple):
         x: int
         for x in range(1, 4):
             k: float = self.invest_ratio ** (-x)
-            enter: pd.Series = (k * reference_price).dropna()
-            enter_col: str = f"{Column.ENTER.value} #{x}"
-            data[enter_col] = enter
-            last_enter_prices.append(enter.iloc[-1])
+            enter_price_k: pd.Series = (k * reference_price).dropna()
+            enter_col_k: str = f"{Column.ENTER.value} #{x}"
+            data[enter_col_k] = enter_price_k
+            last_enter_prices.append(enter_price_k.iloc[-1])
 
         return self._replace(
             data=data,
@@ -318,26 +384,26 @@ class Context(t.NamedTuple):
             return self
         data: pd.DataFrame = self.data.copy()
         price: pd.Series = data[Column.PRICE.value]
-        sma: pd.Series = data[Column.SMA_FAST.value]
+        sma_5: pd.Series = data[Column.SMA_5.value]
 
         # The reference price is the SMA when available,
         # Otherwise the market price:
-        price = sma.combine_first(price).dropna()
+        reference_price = sma_5.combine_first(price).dropna()
 
         # The reference price is the avg. purchase price when
         # available, otherwise the market price:
         if Column.PURCHASE.value in data.columns:
             purchase: pd.Series = data[Column.PURCHASE.value]
-            price = purchase.combine_first(price).dropna()
+            reference_price = purchase.combine_first(reference_price).dropna()
 
         last_exit_prices: t.Sequence[float] = []
         x: int
         for x in range(1, 4):
             k: float = self.invest_ratio**x
-            exit: pd.Series = (k * price).dropna()
-            exit_col: str = f"{Column.EXIT.value} #{x}"
-            data[exit_col] = exit
-            last_exit_prices.append(exit.iloc[-1])
+            exit_price_k: pd.Series = (k * reference_price).dropna()
+            exit_col_k: str = f"{Column.EXIT.value} #{x}"
+            data[exit_col_k] = exit_price_k
+            last_exit_prices.append(exit_price_k.iloc[-1])
 
         return self._replace(
             data=data,
@@ -345,25 +411,26 @@ class Context(t.NamedTuple):
         )
 
     def print_last_prices(self) -> t.Self:
-        reference_price: float = pd.NA
+        ref_price: float = pd.NA
         for price_candidate in (
             self.purchase_price,
             Column.PURCHASE,
-            Column.SMA_FAST,
-            Column.SMA_SLOW,
+            Column.SMA_5,
+            Column.SMA_50,
+            Column.SMA_150,
             self.last_price,
             Column.PRICE,
         ):
             match price_candidate:
                 case float(price) if not pd.isna(price):
-                    reference_price = price
+                    ref_price = price
                     break
                 case Column(column) if column.value in self.data.columns:
                     price: float = self.data[column.value].iloc[-1]
                     if not pd.isna(price):
-                        reference_price = price
+                        ref_price = price
                         break
-        if pd.isna(reference_price):
+        if pd.isna(ref_price):
             return self
 
         def _represent_price(
@@ -383,7 +450,7 @@ class Context(t.NamedTuple):
 
         prices: t.Sequence[str] = [
             *(_represent_price(-1, price) for price in sorted(self.last_enter_prices)),
-            _represent_price(0, reference_price),
+            _represent_price(0, ref_price),
             *(_represent_price(1, price) for price in sorted(self.last_exit_prices)),
         ]
         print("Prices:", " | ".join(prices))
@@ -395,26 +462,29 @@ class Context(t.NamedTuple):
             return self
 
         data: pd.DataFrame = self.data
-        reference_price: float = self.last_price
-        if pd.isna(reference_price):
+        ref_price: float = first_non_na(
+            self.last_price, 
+            self.market_price,
+        )
+        if pd.isna(ref_price):
             return self
 
         # With an invest ration of 1.05, the target would be 5%:
         target_score: float = 100 * (self.invest_ratio - 1.0)
 
         # Compute buy score:
-        if Column.SMA_FAST.value in data.columns:
-            last_sma: float = data[Column.SMA_FAST.value].dropna().iloc[-1]
+        if Column.SMA_5.value in data.columns:
+            last_sma: float = data[Column.SMA_5.value].dropna().iloc[-1]
             if not pd.isna(last_sma):
-                score: float = 100 * ((last_sma - reference_price) / reference_price)
-                color: str = Fore.GREEN if score >= target_score else Fore.LIGHTWHITE_EX
+                score: float = 100 * ((last_sma - ref_price) / ref_price)
+                color: str = Fore.GREEN if score >= target_score else Style.RESET_ALL
                 print(f"{color}Buy score: {score:.2f}%")
 
         # Compute sell score:
         if Column.PURCHASE.value in data.columns:
             last_purchase: float = self.data[Column.PURCHASE.value].iloc[-1]
             if not pd.isna(last_purchase):
-                score: float = 100 * (reference_price - last_purchase) / last_purchase
+                score: float = 100 * (ref_price - last_purchase) / last_purchase
                 color = Fore.YELLOW if score >= target_score else Fore.LIGHTWHITE_EX
                 print(f"{color}Sell score: {score:.2f}%")
 
@@ -502,17 +572,19 @@ class Context(t.NamedTuple):
         linestyle: str
         sma_lenght: int
         for column, sma_lenght, color, linestyle, alpha in [
-            (Column.SMA_FAST.value, self.sma_fast_lenght, "orange", "solid", 1.0),
-            (Column.SMA_SLOW.value, self.sma_slow_lenght, "red", "dotted", 0.75),
+            (Column.SMA_5.value, self.sma_5, "orange", "solid", 1.0),
+            (Column.SMA_50.value, self.sma_50, "red", "dotted", 0.75),
+            (Column.SMA_150.value, self.sma_150, "darkred", "dotted", 0.75),
         ]:
             if not column in data.columns:
                 continue
+
             sma: pd.Series = data[column]
             last_sma: float = sma.iloc[-1]
             plt.plot(
                 data.index,
                 sma,
-                label=f"SMA-{sma_lenght}: {last_sma:.2f}",
+                label=f"SMA-{sma_lenght}: {last_sma:,.2f}",
                 alpha=alpha,
                 color=color,
                 linewidth=2,
@@ -529,7 +601,7 @@ class Context(t.NamedTuple):
                     marker=">",
                 )
                 plt.annotate(
-                    f"{last_sma:.2f}",
+                    f"{last_sma:,.2f}",
                     (last_date, last_sma),
                     xytext=(10, -5),
                     textcoords="offset points",
@@ -544,7 +616,7 @@ class Context(t.NamedTuple):
             plt.plot(
                 data.index,
                 data[purchase_col],
-                label=f"Avg. purch. price: {last_valid_purchase:.2f}",
+                label=f"Avg. purch. price: {last_valid_purchase:,.2f}",
                 linewidth=2,
                 color="blue",
             )
@@ -560,13 +632,16 @@ class Context(t.NamedTuple):
                     marker=">",
                 )
                 plt.annotate(
-                    f"{last_purchase:.2f}",
+                    f"{last_purchase:,.2f}",
                     (last_date, last_purchase),
                     xytext=(10, -5),
                     textcoords="offset points",
                     color="blue",
                 )
         if not self.operations.empty:
+            date: pd.Timestamp
+            price: float
+            quantity: float
             for date, price, quantity in zip(
                 self.operations.index,
                 self.operations[Column.PRICE.value],
@@ -580,7 +655,7 @@ class Context(t.NamedTuple):
                         zorder=3,
                         color="lightgreen" if quantity > 0 else "red",
                         marker="o",
-                        alpha=0.5,
+                        alpha=0.666,
                     )
 
         # Enter/exit prices:
@@ -602,10 +677,7 @@ class Context(t.NamedTuple):
         ticker: yf.Ticker = self.ticker or yf.Ticker(self.security)
         currency: str = ticker.info.get("currency") or "USD"
 
-        plt.title(
-            f"{self.security} ({self.company_name}) - "
-            f"Market price with SMA({self.sma_fast_lenght})"
-        )
+        plt.title(f"{self.security} ({self.company_name})")
         plt.xlabel("Date")
         plt.ylabel(f"Price ({currency})")
         plt.legend(
@@ -808,3 +880,34 @@ def get_company_name(
         .replace(" plc", "")
     )
     return company_name
+
+def get_insertion_ts(
+        data: pd.DataFrame,
+        original_ts: pd.Timestamp,
+) -> pd.Timestamp:
+    # Work on a sorted *view* of the index; this does not modify `data`
+    idx_sorted: pd.Index = data.index.sort_values()
+
+    if len(idx_sorted) == 0:
+        raise ValueError("Cannot snap: DataFrame index is empty.")
+
+    # Find insertion point
+    pos: int = idx_sorted.searchsorted(original_ts)
+
+    # Pick nearest neighbor without assuming any interval
+    nearest_ts: pd.Timestamp
+    if pos == 0:
+        nearest_ts = idx_sorted[0]
+    elif pos == len(idx_sorted):
+        nearest_ts = idx_sorted[-1]
+    else:
+        before = idx_sorted[pos - 1]
+        after  = idx_sorted[pos]
+        # choose the closer one; ties go to 'before'
+        nearest_ts = (
+            before 
+            if (original_ts - before) <= (after - original_ts) 
+            else after
+        )
+
+    return nearest_ts
