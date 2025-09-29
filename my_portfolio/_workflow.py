@@ -19,6 +19,8 @@ from my_portfolio._numerics import (
     first_non_na,
 )
 
+pd.set_option("display.max_rows", 1000)
+
 
 class Column(enum.StrEnum):
     BALANCE = "balance"
@@ -40,7 +42,7 @@ class Context(t.NamedTuple):
 
     company_name: str = ""
     data: pd.DataFrame = pd.DataFrame()
-    invest_ratio: float = 1.03
+    invest_ratio: float = 1.05
     last_date: pd.Timestamp | None = None
     last_enter_prices: t.Sequence[float] = tuple()
     last_exit_prices: t.Sequence[float] = tuple()
@@ -750,7 +752,7 @@ class Context(t.NamedTuple):
             "Quantity",
         ]
 
-        last_ops = self.operations.tail(10)
+        last_ops = self.operations
         min_quantity = first_non_na(last_ops[col_quantity].min(), 1.0)
 
         def _format_date(date: pd.Timestamp) -> str:
