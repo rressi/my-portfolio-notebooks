@@ -1,0 +1,4 @@
+# Enforce POSIX (LF) line endings for all files in the data folder
+# This ensures consistency for CSV and other text files
+
+data/* text eol=lf

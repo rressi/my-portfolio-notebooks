@@ -51,7 +51,6 @@ def import_trades(
     sql_path = Path(sql_path)
 
     csv_encoding: str = _detect_encoding(csv_path)
-
     df: pd.DataFrame = pd.read_csv(
         csv_path,
         encoding=csv_encoding,
