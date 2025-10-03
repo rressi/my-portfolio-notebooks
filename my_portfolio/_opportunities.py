@@ -43,6 +43,7 @@ tickers = [
     "PLTR",
     "QCOM",
     "RACE",
+    "RIVN",
     "SMCI",
     "STX",
     "TSLA",
@@ -64,7 +65,7 @@ def find_buy_opportunities(
     for ticker_name in tickers:
         ticker: yf.Ticker = yf.Ticker(ticker_name)
         company_name: str = get_company_name(ticker)
-        print(f"Processing {ticker_name} - {company_name}...")
+        # print(f"Processing {ticker_name} - {company_name}...")
 
         df: pd.DataFrame = ticker.history(
             period="1mo",
