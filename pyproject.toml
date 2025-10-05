@@ -6,6 +6,8 @@ authors = [
     { name = "Riccardo Ressi", email = "Riccardo.Ressi@gmail.com" }
 ]
 
+
+
 requires-python = ">=3.12"
 dependencies = [
     "chardet",
