@@ -508,7 +508,7 @@ class Context(t.NamedTuple):
             market_price.iloc[-1],
         )
 
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(12, 9))
 
         # Last price:
         annotate_market_price: bool = True
