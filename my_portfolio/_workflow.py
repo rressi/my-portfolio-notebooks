@@ -41,6 +41,7 @@ class Context(t.NamedTuple):
     security: str
 
     company_name: str = ""
+    currency: str | None = None
     data: pd.DataFrame = pd.DataFrame()
     invest_ratio: float = 1.05
     last_date: pd.Timestamp | None = None
@@ -73,9 +74,12 @@ class Context(t.NamedTuple):
         )
         if data.empty:
             raise ValueError(f"No data found for {self.security}")
+        
+        currency: str = self.currency or ticker.info["currency"]
 
         return self._replace(
             company_name=company_name,
+            currency=currency,
             data=data,
             ticker=ticker,
         )
@@ -240,8 +244,7 @@ class Context(t.NamedTuple):
 
         # Convert the currency of the operations to the currency of the ticker:
         if "currency" in operations.columns:
-            ticker_cur: str = self.ticker.info["currency"]
-            operations = convert_currency(operations, ticker_cur)
+            operations = convert_currency(operations, self.currency)
 
         # Get the date interval to insert only operations
         # within the range of our market data:
@@ -677,11 +680,10 @@ class Context(t.NamedTuple):
                 )
 
         ticker: yf.Ticker = self.ticker or yf.Ticker(self.security)
-        currency: str = ticker.info.get("currency") or "USD"
 
         plt.title(f"{self.security} ({self.company_name})")
         plt.xlabel("Date")
-        plt.ylabel(f"Price ({currency})")
+        plt.ylabel(f"Price ({self.currency})")
         plt.legend(
             loc="center left",
             bbox_to_anchor=(1e-2, 0.5),
