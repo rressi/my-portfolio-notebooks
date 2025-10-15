@@ -29,6 +29,8 @@ class Column(enum.StrEnum):
     DATE = "date"
     ENTER = "enter"
     EXIT = "exit"
+    INVESTMENT_BALANCE = "invest-balance"
+    INVESTMENT_COST = "invest-cost"
     PRICE = "price"  # Market price
     PURCHASE = "purchase"  # Avg. purchase price
     QUANTITY = "quantity"
@@ -265,6 +267,8 @@ class Context(t.NamedTuple):
         col_balance: str = Column.BALANCE.value
         col_costs: str = Column.COSTS.value
         col_cum_quantity: str = Column.CUM_QUANTITY.value
+        col_investment_balance: str = Column.INVESTMENT_BALANCE.value
+        col_investment_cost: str = Column.INVESTMENT_COST.value
         col_price: str = Column.PRICE.value
         col_purchase: str = Column.PURCHASE.value
         col_quantity: str = Column.QUANTITY.value
@@ -275,6 +279,8 @@ class Context(t.NamedTuple):
         tot_quantity: float = 0.0
         op_ts: pd.Timestamp
         balance: float = 0.0
+        inv_balance: float = 0.0
+        inv_cost: float = 0.0
         row: t.Mapping[str, t.Any]
         for op_ts, row in operations.iterrows():
             costs: float = row[col_costs]
@@ -290,22 +296,34 @@ class Context(t.NamedTuple):
                 purchase_price = 0.0
                 tot_cost = 0.0
                 tot_quantity = 0.0
+                inv_cost = 0.0
+                inv_balance = 0.0
             elif quantity < 0.0:
                 # We sold part of the stock we had in the wallet:
                 # - The total cost is reduced
                 # - The average purchase price remains the same
+                inv_balance -= costs + (price * quantity)
+                inv_cost += costs
                 tot_cost += quantity * purchase_price
             elif quantity > 0.0:
                 # We bought more stock:
                 # - The total cost is increased
                 # - The average purchase price is updated
+                inv_balance -= costs + (price * quantity)
+                inv_cost += costs
                 tot_cost += quantity * price
                 purchase_price = tot_cost / tot_quantity
+            else: # quantity == 0.0
+                # No stock bought or sold, just costs:
+                inv_balance -= costs
+                inv_cost += costs
 
             # Add datapoing on new columns: 'purchase', 'cum-quantity', 'balance':
             operations.loc[op_ts, col_purchase] = purchase_price
             operations.loc[op_ts, col_cum_quantity] = tot_quantity
             operations.loc[op_ts, col_balance] = balance
+            operations.loc[op_ts, col_investment_balance] = inv_balance
+            operations.loc[op_ts, col_investment_cost] = inv_cost
 
             # Insert datapoint in the data frame only if within the date range:
             if from_date <= op_ts < to_date:
@@ -750,11 +768,6 @@ class Context(t.NamedTuple):
 
         col_price: str = Column.PRICE.value
         col_quantity: str = Column.QUANTITY.value
-        report_column: list[str] = [
-            "At",
-            "Unit price",
-            "Quantity",
-        ]
 
         last_ops = self.operations
         min_quantity = first_non_na(last_ops[col_quantity].min(), 1.0)
@@ -778,27 +791,33 @@ class Context(t.NamedTuple):
         report["Time"] = last_ops.index.map(_format_date)
         report["Quantity"] = last_ops[col_quantity].map(_format_quantity)
         report["Price"] = last_ops[col_price].map(_format_price)
-        report["Tot"] = (last_ops[col_quantity] * last_ops[col_price]).map(
-            _format_price
-        )
+
+        value: pd.Series = last_ops[col_quantity] * last_ops[col_price]
+        report["Value"] = value.map(_format_price)
 
         col_cum_quantity: str = Column.CUM_QUANTITY.value
         if col_cum_quantity in last_ops.columns:
             report["Wallet"] = last_ops[col_cum_quantity].map(_format_quantity)
-            report_column.append(col_cum_quantity)
 
         col_purhcase: str = Column.PURCHASE.value
         if col_purhcase in last_ops.columns:
             report["Avg. price"] = last_ops[col_purhcase].map(_format_price)
-            report_column.append(col_purhcase)
 
         col_balance: str = Column.BALANCE.value
+        col_inv_balance: str = Column.INVESTMENT_BALANCE.value
+        col_inv_cost: str = Column.INVESTMENT_COST.value
         if col_balance in last_ops.columns and col_cum_quantity in last_ops.columns:
+            report["Inv. Cost"] = last_ops[col_inv_cost].map(_format_price)
+
+            report["Inv. Balance"] = (
+                (last_ops[col_price] * last_ops[col_cum_quantity])
+                + last_ops[col_inv_balance]
+            ).map(_format_price)
+
             report["Balance"] = (
                 (last_ops[col_price] * last_ops[col_cum_quantity])
                 + last_ops[col_balance]
             ).map(_format_price)
-            report_column.append(col_balance)
 
             last_price: float = pd.NA
             last_date: pd.Timestamp | None = None
@@ -809,15 +828,19 @@ class Context(t.NamedTuple):
 
             # Add a summary line with the last price:
             if last_date is not None and not pd.isna(last_price):
-                last_balance: float = last_ops[col_balance].iloc[-1] + (
-                    last_price * last_quantity
-                )
+                last_value: float = last_price * last_quantity
+                last_inv_balance: float = last_ops[col_inv_balance].iloc[-1]
+                last_inv_cost: float = last_ops[col_inv_cost].iloc[-1]
+                last_balance: float = last_ops[col_balance].iloc[-1]
+
                 report.loc[last_date, "Time"] = _format_date(last_date)
                 report.loc[last_date, "Quantity"] = _format_quantity(last_quantity)
                 report.loc[last_date, "Price"] = _format_price(last_price)
-                report.loc[last_date, "Tot"] = _format_price(last_price * last_quantity)
+                report.loc[last_date, "Value"] = _format_price(last_value)
                 report.loc[last_date, "Wallet"] = _format_quantity(last_quantity)
-                report.loc[last_date, "Balance"] = _format_price(last_balance)
+                report.loc[last_date, "Inv. Cost"] = _format_price(last_inv_cost)
+                report.loc[last_date, "Inv. Balance"] = _format_price(last_value + last_inv_balance)
+                report.loc[last_date, "Balance"] = _format_price(last_value + last_balance)
 
         report = report.set_index("Time")
         display(report)
