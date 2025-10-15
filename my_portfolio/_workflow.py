@@ -73,9 +73,11 @@ class Context(t.NamedTuple):
             .sort_index()
         )
         if data.empty:
-            raise ValueError(f"No data found for {self.security}")
-        
-        currency: str = self.currency or ticker.info["currency"]
+            raise ValueError(f"No data found for ticker: '{self.security}'")
+
+        currency: str = self.currency or ticker.info.get("currency")
+        if currency is None:
+            raise ValueError(f"No currency found for ticker: '{self.security}'")
 
         return self._replace(
             company_name=company_name,

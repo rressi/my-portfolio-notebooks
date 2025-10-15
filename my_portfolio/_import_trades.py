@@ -39,6 +39,14 @@ def import_many_trades(
         .set_index("date")  # restore DateTimeIndex
         .sort_index()
     )
+
+    # Ensure to have no duplicate timestamps (move forward by 1 second if needed):
+    increments: pd.Series = pd.to_timedelta(
+        arg=new_trades.groupby(new_trades.index).cumcount(),
+        unit="s"
+    )
+    new_trades.index = new_trades.index + increments
+
     return new_trades
 
 
