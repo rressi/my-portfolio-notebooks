@@ -807,6 +807,7 @@ class Context(t.NamedTuple):
         last_date: pd.Timestamp | None = None
         last_inv_balance: float = 0.0
         last_inv_cost: float = 0.0
+        last_quantity: float = 0.0
         last_value: float = 0.0
             
         if col_balance in operations.columns and col_cum_quantity in operations.columns:
@@ -823,7 +824,7 @@ class Context(t.NamedTuple):
             ).map(_format_price)
 
             last_price: float = pd.NA
-            last_quantity: float = operations[col_cum_quantity].iloc[-1]
+            last_quantity = operations[col_cum_quantity].iloc[-1]
             if last_quantity > 0.0:
                 last_date = first_non_na(self.last_date, self.market_date)
                 last_price = first_non_na(self.last_price, self.market_price)
@@ -865,7 +866,13 @@ class Context(t.NamedTuple):
                 f"Current return:", 
                 get_colorized_price(balance, self.currency)
             )
-
+            if last_quantity > 0.0:
+                break_even: float = (last_value - balance) / last_quantity
+                print(
+                    "Breakeven price:",
+                    f"{Fore.YELLOW}{break_even:,.2f}{Style.RESET_ALL} {self.currency}"
+                )
+            
             def _get_row_styles(row: pd.Series) -> str:
                 styles: list[str] = []
                 if row.name == last_date_str:

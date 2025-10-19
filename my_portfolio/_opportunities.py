@@ -40,6 +40,7 @@ tickers = [
     "NOW",
     "NVDA",
     "NVTS",
+    "NFLX",
     "ORCL",
     "PLTR",
     "QCOM",
