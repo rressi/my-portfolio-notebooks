@@ -769,11 +769,9 @@ class Context(t.NamedTuple):
         col_price: str = Column.PRICE.value
         col_quantity: str = Column.QUANTITY.value
 
-        last_ops = self.operations
-        min_quantity = first_non_na(last_ops[col_quantity].min(), 1.0)
+        operations: pd.DataFrame = ensure_ts_index_is_unique(self.operations)
 
-        def _format_date(date: pd.Timestamp) -> str:
-            return date.strftime("%Y-%m-%d %H:%M")
+        min_quantity = first_non_na(operations[col_quantity].min(), 1.0)
 
         def _format_price(price: float) -> str:
             return f"{price:,.2f}"
@@ -787,53 +785,56 @@ class Context(t.NamedTuple):
                 return f"{quantity:,.6f}"
 
         report: pd.DataFrame = pd.DataFrame()
-        report.index = last_ops.index
-        report["Time"] = last_ops.index.map(_format_date)
-        report["Quantity"] = last_ops[col_quantity].map(_format_quantity)
-        report["Price"] = last_ops[col_price].map(_format_price)
+        
+        report["Quantity"] = operations[col_quantity].map(_format_quantity)
+        report["Price"] = operations[col_price].map(_format_price)
 
-        value: pd.Series = last_ops[col_quantity] * last_ops[col_price]
+        value: pd.Series = operations[col_quantity] * operations[col_price]
         report["Value"] = value.map(_format_price)
 
         col_cum_quantity: str = Column.CUM_QUANTITY.value
-        if col_cum_quantity in last_ops.columns:
-            report["Wallet"] = last_ops[col_cum_quantity].map(_format_quantity)
+        if col_cum_quantity in operations.columns:
+            report["Wallet"] = operations[col_cum_quantity].map(_format_quantity)
 
         col_purhcase: str = Column.PURCHASE.value
-        if col_purhcase in last_ops.columns:
-            report["Avg. price"] = last_ops[col_purhcase].map(_format_price)
+        if col_purhcase in operations.columns:
+            report["Avg. price"] = operations[col_purhcase].map(_format_price)
 
         col_balance: str = Column.BALANCE.value
         col_inv_balance: str = Column.INVESTMENT_BALANCE.value
         col_inv_cost: str = Column.INVESTMENT_COST.value
-        if col_balance in last_ops.columns and col_cum_quantity in last_ops.columns:
-            report["Inv. Cost"] = last_ops[col_inv_cost].map(_format_price)
+
+        last_date: pd.Timestamp | None = None
+        last_inv_balance: float = 0.0
+        last_inv_cost: float = 0.0
+        last_value: float = 0.0
+            
+        if col_balance in operations.columns and col_cum_quantity in operations.columns:
+            report["Inv. Cost"] = operations[col_inv_cost].map(_format_price)
 
             report["Inv. Balance"] = (
-                (last_ops[col_price] * last_ops[col_cum_quantity])
-                + last_ops[col_inv_balance]
+                (operations[col_price] * operations[col_cum_quantity])
+                + operations[col_inv_balance]
             ).map(_format_price)
 
             report["Balance"] = (
-                (last_ops[col_price] * last_ops[col_cum_quantity])
-                + last_ops[col_balance]
+                (operations[col_price] * operations[col_cum_quantity])
+                + operations[col_balance]
             ).map(_format_price)
 
             last_price: float = pd.NA
-            last_date: pd.Timestamp | None = None
-            last_quantity: float = last_ops[col_cum_quantity].iloc[-1]
+            last_quantity: float = operations[col_cum_quantity].iloc[-1]
             if last_quantity > 0.0:
                 last_date = first_non_na(self.last_date, self.market_date)
                 last_price = first_non_na(self.last_price, self.market_price)
 
             # Add a summary line with the last price:
             if last_date is not None and not pd.isna(last_price):
-                last_value: float = last_price * last_quantity
-                last_inv_balance: float = last_ops[col_inv_balance].iloc[-1]
-                last_inv_cost: float = last_ops[col_inv_cost].iloc[-1]
-                last_balance: float = last_ops[col_balance].iloc[-1]
+                last_value = last_price * last_quantity
+                last_inv_balance = operations[col_inv_balance].iloc[-1]
+                last_inv_cost = operations[col_inv_cost].iloc[-1]
+                last_balance: float = operations[col_balance].iloc[-1]
 
-                report.loc[last_date, "Time"] = _format_date(last_date)
                 report.loc[last_date, "Quantity"] = _format_quantity(last_quantity)
                 report.loc[last_date, "Price"] = _format_price(last_price)
                 report.loc[last_date, "Value"] = _format_price(last_value)
@@ -842,8 +843,51 @@ class Context(t.NamedTuple):
                 report.loc[last_date, "Inv. Balance"] = _format_price(last_value + last_inv_balance)
                 report.loc[last_date, "Balance"] = _format_price(last_value + last_balance)
 
+        def _format_date(date: pd.Timestamp) -> str:
+            return date.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Format the index as a 'Time' column:
+        report = ensure_ts_index_is_unique(report)
+        report["Time"] = report.index.map(_format_date)
+        last_date_str: str | None = None
+        if last_date is not None:
+            last_date_str = _format_date(last_date)
+            assert isinstance(last_date_str, str)
+            report.loc[last_date, "Time"] = last_date_str              
         report = report.set_index("Time")
-        display(report)
+
+        if last_date_str is not None:
+            assert report.columns.is_unique, f"{self.ticker}: report columns must be unique"
+            assert report.index.is_unique, f"{self.ticker}: report index must be unique: {report.index}"
+            
+            balance: float = last_value + last_inv_balance - last_inv_cost
+            print(
+                f"Current return:", 
+                get_colorized_price(balance, self.currency)
+            )
+
+            def _get_row_styles(row: pd.Series) -> str:
+                styles: list[str] = []
+                if row.name == last_date_str:
+                    styles.append("font-weight: bold")
+                    if balance > 0.0:
+                        styles.append("background-color: green")
+                    elif balance < 0.0:
+                        styles.append("background-color: red")
+                return "; ".join(styles)
+
+            def _apply_style(row: pd.Series) -> t.List[str]:
+                cell_style: str = _get_row_styles(row)
+                return [cell_style for _ in row]
+            
+            styled: pd.Styler = report.style.apply(
+                func=_apply_style, 
+                axis=1,
+            )
+            display(styled)
+        else:
+            display(report)
+        
         return self
 
     def show_status(self) -> t.Self:
@@ -940,3 +984,56 @@ def get_insertion_ts(
         )
 
     return nearest_ts
+
+def ensure_ts_index_is_unique(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    if df.index.is_unique:
+        return df
+    if df.index.empty:
+        return df
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("DataFrame index must be a DatetimeIndex")
+    
+    df = df.copy()
+
+    attempts: int = 0
+    while not df.index.is_unique and attempts < 10:
+        increments: pd.Series = pd.to_timedelta(
+            arg=df.groupby(df.index).cumcount(),
+            unit="s"
+        )
+        df.index = df.index + increments
+        attempts += 1
+
+    assert df.index.is_unique, "DataFrame index must be unique after adjustment"
+
+    return df
+
+
+def get_colorized_price(
+    price: t.Any,
+    currency: str | None = None,
+) -> str:
+    if pd.isna(price):
+        return "N/A"
+    
+    # Colorize the price based on its value:
+    if isinstance(price, float):
+        if price < 0.0:
+            price = f"{Fore.RED}{price:,.2f}{Style.RESET_ALL}"
+        elif price > 0.0:
+            price = f"{Fore.GREEN}{price:,.2f}{Style.RESET_ALL}"
+        else:  # price == 0.0
+            price = f"{price:,.2f}"
+
+    # Convert to string if not already:
+    if not isinstance(price, str):
+        price = f"{price}"
+    assert isinstance(price, str)
+    
+    # Append currency if provided:
+    if currency is not None:
+        price = f"{price} {currency}"
+    
+    return price
