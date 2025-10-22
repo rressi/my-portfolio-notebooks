@@ -273,14 +273,15 @@ class Context(t.NamedTuple):
         col_purchase: str = Column.PURCHASE.value
         col_quantity: str = Column.QUANTITY.value
 
-        # Compute balance and average purchase price:
-        purchase_price: float = 0.0
-        tot_cost: float = 0.0
-        tot_quantity: float = 0.0
-        op_ts: pd.Timestamp
         balance: float = 0.0
         inv_balance: float = 0.0
         inv_cost: float = 0.0
+        purchase_price: float = 0.0
+        tot_cost: float = 0.0
+        tot_quantity: float = 0.0
+        
+        # Compute balance and average purchase price:
+        op_ts: pd.Timestamp
         row: t.Mapping[str, t.Any]
         for op_ts, row in operations.iterrows():
             costs: float = row[col_costs]

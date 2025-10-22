@@ -6,7 +6,7 @@ ROOT_FOLDER="${1:-.}"
 
 # Update the virtual environment:
 echo "Synchronizing virtual environment..."
-uv sync
+uv sync --all-extras
 
 echo "Removing checkopoint files..."
 rm -vrf .ipynb_checkpoints
