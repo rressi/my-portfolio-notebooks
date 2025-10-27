@@ -34,7 +34,8 @@ class Column(enum.StrEnum):
     PRICE = "price"  # Market price
     PURCHASE = "purchase"  # Avg. purchase price
     QUANTITY = "quantity"
-    SMA_5 = "sma-10"
+    SMA_5 = "sma-5"
+    SMA_20 = "sma-20"
     SMA_50 = "sma-50"
     SMA_150 = "sma-150"
 
@@ -56,6 +57,7 @@ class Context(t.NamedTuple):
     purchase_date: pd.Timestamp | None = None
     purchase_price: float = pd.NA
     sma_5: int = 5
+    sma_20: int = 20
     sma_50: int = 50
     sma_150: int = 150
     trades_isin: str | None = None
@@ -179,9 +181,9 @@ class Context(t.NamedTuple):
 
         # Compute SMAs and insert them into the data frame:
         for sma_col, sma_lenght, period in zip(
-            [Column.SMA_5.value, Column.SMA_50.value, Column.SMA_150.value],
-            [self.sma_5, self.sma_50, self.sma_150],
-            ["3mo", "6mo", "1y"],
+            [Column.SMA_5.value, Column.SMA_20, Column.SMA_50.value, Column.SMA_150.value],
+            [self.sma_5, self.sma_20, self.sma_50, self.sma_150],
+            ["3mo", "3mo", "6mo", "1y"],
         ):
             sma_x: pd.Series = (
                 self.ticker.history(period=period, interval="1d")
@@ -210,7 +212,12 @@ class Context(t.NamedTuple):
                     data.loc[insertion_ts, sma_col] = sma_value
 
         # Fordard fill the SMAs:
-        for sma_col in [Column.SMA_5.value, Column.SMA_50.value, Column.SMA_150.value]:
+        for sma_col in [
+            Column.SMA_5.value, 
+            Column.SMA_20.value, 
+            Column.SMA_50.value, 
+            Column.SMA_150.value,
+        ]:
            if sma_col in data.columns:
                data[sma_col] = data[sma_col].ffill()
 
@@ -442,6 +449,7 @@ class Context(t.NamedTuple):
             self.purchase_price,
             Column.PURCHASE,
             Column.SMA_5,
+            Column.SMA_20,
             Column.SMA_50,
             Column.SMA_150,
             self.last_price,
@@ -599,8 +607,9 @@ class Context(t.NamedTuple):
         sma_lenght: int
         for column, sma_lenght, color, linestyle, alpha in [
             (Column.SMA_5.value, self.sma_5, "orange", "solid", 1.0),
-            (Column.SMA_50.value, self.sma_50, "red", "dotted", 0.75),
-            (Column.SMA_150.value, self.sma_150, "darkred", "dotted", 0.75),
+            (Column.SMA_20, self.sma_20, "red", "dotted", 0.75),
+            (Column.SMA_50.value, self.sma_50, "darkred", "dotted", 0.75),
+            (Column.SMA_150.value, self.sma_150, "brown", "dotted", 0.75),
         ]:
             if not column in data.columns:
                 continue
