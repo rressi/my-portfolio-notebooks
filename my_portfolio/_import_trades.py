@@ -66,6 +66,11 @@ def import_trades(
         sep=None,
     )
 
+    # Normalize columns: some CSV exports may have different schemas
+    # If "Valuta Importo netto" exists, use it as the currency column
+    if "Valuta Importo netto" in df.columns:
+        df["Valuta"] = df["Valuta Importo netto"]
+
     # The columns for this DataFrame are:
     #   - date       : transaction timestamp in format 'YYYY-MM-DD hh:mm:ss'
     #   - ticker     : stock symbol
