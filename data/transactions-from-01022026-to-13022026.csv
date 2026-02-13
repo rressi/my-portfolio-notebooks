@@ -1,4 +1,5 @@
-Data;Ordine #;Transazioni;Simbolo;Nome;ISIN;Quantit�;Prezzo unit.;Costi;Interesse maturati;Importo netto;Saldo;Valuta
+﻿Data;Ordine #;Transazioni;Simbolo;Nome;ISIN;Quantità;Prezzo unit.;Costi;Interesse maturati;Importo netto;Saldo;Valuta
+13-02-2026 18:37:58;282986652;Acquisto;HL;"HECLA MINING ORD";US4227041062;1000.0;22.7699;114.15;0.00;-22884.05;-37636.24;USD
 13-02-2026 17:32:58;282977825;Acquisto;PAAS;"PAN AMER SILVER ORD";CA6979001089;500.0;58.11;178.58;0.00;-29233.58;-14752.19;USD
 13-02-2026 17:26:27;282981271;Acquisto;ZSIL;"Swisscanto Silver ETF-A CHF";CH0183135976;100.0;171.34;26.77;0.00;-17160.77;-4434.44;CHF
 13-02-2026 12:00:16;282901043;Acquisto;ZSIL;"Swisscanto Silver ETF-A CHF";CH0183135976;50.0;169.98;18.99;0.00;-8517.99;12726.33;CHF
