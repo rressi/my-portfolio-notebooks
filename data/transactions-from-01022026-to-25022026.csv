@@ -1,4 +1,5 @@
-﻿Data;Ordine #;Transazioni;Simbolo;Nome;ISIN;Quantità;Prezzo unit.;Costi;Interesse maturati;Importo netto;Saldo;Valuta
+Data;Ordine #;Transazioni;Simbolo;Nome;ISIN;Quantit�;Prezzo unit.;Costi;Interesse maturati;Importo netto;Saldo;Valuta
+25-02-2026 09:02:16;284220342;Acquisto;ZSIL;"Swisscanto Silver ETF-A CHF";CH0183135976;100.0;199.68;29.33;0.00;-19997.33;-6476.22;CHF
 24-02-2026 17:27:39;284178565;Acquisto;ZSIL;"Swisscanto Silver ETF-A CHF";CH0183135976;100.0;193.58;28.77;0.00;-19386.77;13521.11;CHF
 24-02-2026 15:24:21;284160342;Acquisto;ZSIL;"Swisscanto Silver ETF-A CHF";CH0183135976;100.0;191.1095;24.18;0.00;-19135.13;32907.88;CHF
 24-02-2026 14:41:26;284157053;Acquisto;ZSIL;"Swisscanto Silver ETF-A CHF";CH0183135976;50.0;193.52;20.06;0.00;-9696.06;52043.01;CHF
