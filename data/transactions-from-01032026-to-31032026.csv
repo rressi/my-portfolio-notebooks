@@ -1,0 +1,15 @@
+Data;Ordine #;Transazioni;Simbolo;Nome;ISIN;Quantità;Prezzo unit.;Costi;Interesse maturati;Importo netto;Saldo;Valuta
+31-03-2026 17:19:19;00000000;Diritti di Custodia;;;;1.0;25.00;2.03;0.00;-27.03;571.22;CHF
+30-03-2026 05:29:11;00000000;Prelevamento;;;;1.0;421.00;0.00;0.00;-421.00;598.25;CHF
+29-03-2026 11:50:00;00000000;Transazione con carta;;"Denner AG Marly";;1.0;-1.85;0.00;0.00;-1.85;1019.25;CHF
+28-03-2026 14:59:17;00000000;Transazione con carta;;"LS Aux Merveilles d Al";;1.0;-16.80;0.00;0.00;-16.80;1021.10;CHF
+23-03-2026 01:29:07;00000000;Transazione con carta;;"LS Aux Merveilles d Al";;1.0;-6.00;0.00;0.00;-6.00;1037.90;CHF
+22-03-2026 04:19:29;00000000;Transazione con carta;;"Restaurant Pizzeria la";;1.0;-17.00;0.00;0.00;-17.00;1043.90;CHF
+22-03-2026 04:00:58;00000000;Transazione con carta;;"Lidl Marly";;1.0;-90.40;0.00;0.00;-90.40;1060.90;CHF
+21-03-2026 15:01:55;00000000;Transazione con carta;;"LS Assemblage";;1.0;-29.75;0.00;0.00;-29.75;1151.30;CHF
+21-03-2026 05:04:07;00000000;Transazione con carta;;"L'Ice Café";;1.0;-51.00;0.00;0.00;-51.00;1181.05;CHF
+20-03-2026 01:45:21;00000000;Pagamento;;;;1.0;419.09;0.00;0.00;419.09;1232.05;CHF
+14-03-2026 12:00:17;00000000;Servizi Paganti;;;;1.0;-10.00;0.00;0.00;-10.00;-10.00;USD
+02-03-2026 05:45:37;00000000;Prelevamento;;;;1.0;20000.00;0.00;0.00;-20000.00;812.96;CHF
+02-03-2026 05:45:34;00000000;Prelevamento;;;;1.0;44000.00;0.00;0.00;-44000.00;20812.96;CHF
+02-03-2026 05:45:20;00000000;Prelevamento;;;;1.0;44000.00;0.00;0.00;-44000.00;64812.96;CHF
